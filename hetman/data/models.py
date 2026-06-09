@@ -17,10 +17,17 @@ Typical usage example:
 # Copyright (c) 2023-present Tech. TTGames
 
 import datetime
-from typing import Type
+import enum
 
 import sqlalchemy
 from sqlalchemy import orm
+
+class Status(int, enum.Enum):
+    """Enum for the status of a server."""
+    OFFLINE = 0
+    ONLINE = 1
+    SNAPSHOTTING = 2
+    DELETING = 3
 
 
 class Base(orm.DeclarativeBase):
@@ -42,14 +49,15 @@ class Server(Base):
     id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.Integer, primary_key=True)
     name: orm.Mapped[str] = orm.mapped_column(sqlalchemy.String, unique=True)
     discord_id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, index=True)
+    role_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
 
     # Hetzner Data
     hcloud_server_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
     current_snapshot_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
-    status: orm.Mapped[str] = orm.mapped_column(sqlalchemy.String, default="offline")
+    status: orm.Mapped[Status] = orm.mapped_column(sqlalchemy.Enum(Status), default=Status.OFFLINE)
 
     # Billing Data
-    created_at: orm.Mapped[float | None] = orm.mapped_column(sqlalchemy.Float, nullable=True)
+    start_time: orm.Mapped[datetime.datetime | None] = orm.mapped_column(sqlalchemy.DateTime, nullable=True)
     credits: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.0)
     snapshot_reserve: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.5)
 
