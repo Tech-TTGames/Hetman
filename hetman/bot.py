@@ -48,8 +48,8 @@ class Hetman(commands.AutoShardedBot):
     def __init__(self,
                  *args,
                  db_engine: sa_asyncio.AsyncEngine,
-                 confg: config.Config = config.Config(),
-                 secrets: config.Secret = config.Secret(),
+                 confg: config.Config,
+                 secrets: config.Secret,
                  **kwargs) -> None:
         """Initializes the bot instance.
 
@@ -60,10 +60,8 @@ class Hetman(commands.AutoShardedBot):
             *args: The arguments to pass to the super class.
             db_engine: The database engine.
             confg: The config for the bot.
-                Defaults to `hetman.statvars.MiniConfig`.
             secrets: The secrets for the bot.
                 Preferably with the bot token already consumed.
-                Defaults to `hetman.data.Secret`.
             **kwargs: The keyword arguments to pass to the super class.
         """
         super().__init__(*args, **kwargs)
