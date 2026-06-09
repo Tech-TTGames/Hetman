@@ -94,12 +94,9 @@ async def start_bot(conf: config.Config) -> None:
 
         @sqlalchemy.event.listens_for(sqlalchemy.Engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
-            ac = dbapi_connection.autocommit
-            dbapi_connection.autocommit = True
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
-            dbapi_connection.autocommit = ac
         logging.info("Pragmas set. Ensuring tables...")
 
         async with engine.begin() as conn:
