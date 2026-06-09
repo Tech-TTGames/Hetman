@@ -464,7 +464,6 @@ class ServerManager(commands.Cog):
     @app_commands.describe(
         name="A readable name for the server.",
         snapshot_id="The Hetzner image/snapshot ID to boot from.",
-        cf_zone_id="The Cloudflare Zone ID for DDNS.",
         target_guild_id="The ID of the Discord server this node belongs to.",
         server_type="The Hetzner server type (e.g., cx22, cpx31).",
         role_id="Optional: A Discord role id of the role required to start/stop this server."
@@ -534,7 +533,7 @@ class ServerManager(commands.Cog):
         snapshot_id="New Hetzner snapshot ID.",
         target_guild_id="New Discord guild ID.",
         server_type="New server type (e.g., cx22).",
-        role="New bound role.",
+        role_id="New bound role.",
         clear_role="Set to True to remove the existing role requirement.",
         a2s_port="New A2S port.",
         snapshot_reserve="New snapshot reserve (in credits).",
@@ -709,3 +708,15 @@ class ServerManager(commands.Cog):
         except Exception as e:
             logging.exception(f"[ADMIN] Failed to add credits: {e}")
             await ctx.followup.send("Failed to add credits due to an internal error.", ephemeral=True)
+
+
+async def setup(bot_instance: Hetman) -> None:
+    """Sets up the error handler.
+
+    This function is called when the cog is loaded.
+    It is used to add the cog to the bot.
+
+    Args:
+        bot_instance: The bot instance.
+    """
+    await bot_instance.add_cog(ServerManager(bot_instance))

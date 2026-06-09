@@ -116,7 +116,7 @@ async def start_bot(conf: config.Config) -> None:
     try:
         scrt = config.Secret()
         bot_instance = bot.Hetman(
-            config=conf,
+            confg=conf,
             secrets=scrt,
             db_engine=engine,
             intents=const.INTENTS,
