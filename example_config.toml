@@ -2,6 +2,8 @@ dev_guild_id = 111111111111111
 # The ID of the guild with access to the override commands
 domain = "example.com"
 # The domain to subdomain for the servers.
+cloudflare_zone_id = ""
+# The cloudlfare zone ID of the aforementioned domain.
 [shutdown]
 lookahead = 10
 # Minutes to shut down before the next billing hour if empty/no credits.
