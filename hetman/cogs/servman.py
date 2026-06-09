@@ -535,7 +535,9 @@ class ServerManager(commands.Cog):
         target_guild_id="New Discord guild ID.",
         server_type="New server type (e.g., cx22).",
         role="New bound role.",
-        clear_role="Set to True to remove the existing role requirement."
+        clear_role="Set to True to remove the existing role requirement.",
+        a2s_port="New A2S port.",
+        snapshot_reserve="New snapshot reserve (in credits).",
     )
     @app_commands.autocomplete(server_id=server_autocomplete)
     @checks.is_owner_check()
@@ -549,9 +551,24 @@ class ServerManager(commands.Cog):
             target_guild_id: str = None,
             server_type: str = None,
             role_id: int | None = None,
-            clear_role: bool = False
+            clear_role: bool = False,
+            a2s_port: int | None = None,
+            snapshot_reserve: float | None = None,
     ) -> None:
-        """Edits an existing server in the database."""
+        """Edits an existing server in the database.
+
+        Args:
+            ctx: The interaction calling the command.
+            server_id: The ID of the server to edit.
+            name: The name of the server.
+            snapshot_id: The Hetzner image/snapshot ID to boot from.
+            target_guild_id: The Discord ID of the guild this server belongs to.
+            server_type: Hetzner server type to provision.
+            role_id: The role id to assign permission to start/stop the server in the guild.
+            clear_role: Set to True to remove the existing role requirement.
+            a2s_port: New A2S port.
+            snapshot_reserve: Custom snapshot reserve (in credits).
+        """
         await ctx.response.defer(ephemeral=True)
 
         try:
@@ -591,6 +608,10 @@ class ServerManager(commands.Cog):
                 server.discord_id = guild_id_int
             if server_type is not None:
                 server.server_type = server_type
+            if a2s_port is not None:
+                server.a2s_port = a2s_port
+            if snapshot_reserve is not None:
+                server.snapshot_reserve = snapshot_reserve
 
             if role_id is not None:
                 server.role_id = role_id
@@ -616,7 +637,12 @@ class ServerManager(commands.Cog):
     @checks.is_owner_check()
     @app_commands.guilds(_CNFG["dev_guild_id"])
     async def force_stop(self, ctx: discord.Interaction, server_id: str) -> None:
-        """Instantly forces a server to spin down."""
+        """Instantly forces a server to spin down.
+
+        Args:
+            ctx: The interaction calling the command.
+            server_id: The ID of the server to force-stop.
+        """
         await ctx.response.defer(ephemeral=True)
 
         try:
@@ -657,7 +683,18 @@ class ServerManager(commands.Cog):
     @checks.is_owner_check()
     @app_commands.guilds(_CNFG["dev_guild_id"])
     async def add_credits(self, ctx: discord.Interaction, server_id: str, amount: float):
-        """Adds credits to a specific server balance."""
+        """
+        Adds billing credits to a specified server. This command is restricted to
+        users with owner permissions and allows adding a specific number of
+        credits to the account balance of a server.
+
+        Args:
+            ctx: The interaction context that contains
+                information about the command invocation.
+            server_id: The unique identifier of the server to which credits
+                will be added.
+            amount: The amount of billing credits to add to the server.
+        """
         await ctx.response.defer(ephemeral=True)
         try:
             server_uuid = uuid.UUID(server_id)
