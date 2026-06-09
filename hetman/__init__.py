@@ -25,10 +25,12 @@ import sys
 import colorama
 
 import discord
+import sqlalchemy
 from discord.ext import commands
+from sqlalchemy.ext import asyncio as sa_asyncio
 
 from hetman import bot
-from hetman.data import config, const, interpreter
+from hetman.data import config, const, models
 
 
 # pylint: disable=unused-argument
@@ -65,6 +67,16 @@ async def start_bot(conf: config.Config) -> None:
         dscrd_logger.setLevel(logging.INFO)
         dscrd_logger.addHandler(const.HANDLER)
 
+        # Set up sqlalchemy logging
+        sql_logger = logging.getLogger("sqlalchemy.engine")
+        sql_logger.setLevel(logging.WARNING)
+        sql_logger.addHandler(const.HANDLER)
+
+        sql_pool_logger = logging.getLogger("sqlalchemy.pool")
+        sql_pool_logger.setLevel(logging.WARNING)
+        sql_pool_logger.addHandler(const.HANDLER)
+
+
         logging.info("Logging set up.")
     # pylint: disable=broad-except
     except Exception as e:
@@ -75,12 +87,42 @@ async def start_bot(conf: config.Config) -> None:
         return
     print(f"LOGGING: {const.OK}")
 
+    # Set up database
+    try:
+        logging.info("Creating engine...")
+        engine = sa_asyncio.create_async_engine("sqlite+aiosqlite:///hetman.db", connect_args={"autocommit": False})
+        logging.info("Engine created. Customizing pragmas...")
+
+        @sqlalchemy.event.listens_for(sqlalchemy.Engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            ac = dbapi_connection.autocommit
+            dbapi_connection.autocommit = True
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+            dbapi_connection.autocommit = ac
+        logging.info("Pragmas set. Ensuring tables...")
+
+        async with engine.begin() as conn:
+            await conn.run_sync(models.Base.metadata.create_all)
+            await conn.commit()
+        logging.info("Tables ensured. Starting bot...")
+    # pylint: disable=broad-exception-caught # skipcq: PYL-W0718
+    except Exception as exc:
+        logging.exception("Database setup failed. Aborting startup.")
+        print("Database: FAILED")
+        print(f"Error: {exc}")
+        print("Aborting...")
+        return
+    print("Database: OK")
+
     # Create bot instance
     try:
         scrt = config.Secret()
         bot_instance = bot.Hetman(
             config=conf,
             secrets=scrt,
+            db_engine=engine,
             intents=const.INTENTS,
             command_prefix=commands.when_mentioned,
             status=discord.Status.online,
@@ -100,7 +142,7 @@ async def start_bot(conf: config.Config) -> None:
     print(const.ALL_OK)
     print("Starting bot...")
     try:
-        await bot_instance.start(scrt.token())
+        await bot_instance.start(scrt.token("discord"))
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt detected. Shutting down...")
         print("Keyboard interrupt detected. Shutting down...")

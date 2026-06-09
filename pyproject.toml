@@ -15,6 +15,9 @@ python = "^3.14"
 "discord.py" = "^2.2.3"
 tomli = "^2.0.1"
 hcloud = "^2.20.0"
+cloudflare = {extras = ["aiohttp"], version = "^5.2.0"}
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.50"}
+aiosqlite = "^0.22.1"
 
 [tool.poetry.group.dev.dependencies]
 isort = "^8.0.1"

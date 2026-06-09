@@ -91,24 +91,16 @@ class Secret:
             self.secrets = tomli.load(f)
         BURNABLE = True
 
-    def token(self) -> str:
-        """Returns the bot token.
+    def token(self, key: str) -> str:
+        """Returns the chosen token.
     
-        This method returns the bot token.
+        This method returns the chosen token.
         It also deletes the token from memory.
+
+        Args:
+            key: The key to use.
         """
-        if not self.secrets["token"]:
+        if not self.secrets[key]:
             raise RuntimeError("No token found!")
-        token = self.secrets.pop("token")
-        return token
-
-    def htoken(self) -> str:
-        """Returns the Hetzner cloud token.
-
-        This method returns the Hetzner cloud token.
-        It also deletes the token from memory.
-        """
-        if not self.secrets["htoken"]:
-            raise RuntimeError("No Hetzner cloud token found!")
-        token = self.secrets.pop("htoken")
+        token = self.secrets.pop(key)
         return token

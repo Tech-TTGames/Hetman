@@ -19,6 +19,8 @@ import logging
 import discord
 from discord.ext import commands
 from hcloud import Client
+from cloudflare import AsyncCloudflare, DefaultAioHttpClient
+from sqlalchemy.ext import asyncio as sa_asyncio
 
 from hetman import cogs
 from hetman.data import const, config
@@ -34,13 +36,18 @@ class Hetman(commands.AutoShardedBot):
     Attributes:
         stat_confg: The config for the bot.
         hcli: The Hetzner Cloud client.
+        cfcli: The Cloudflare client.
+        sessions: The database session maker.
     """
 
     stat_confg: config.Config
     hcli: Client
+    cfcli: AsyncCloudflare
+    sessions: sa_asyncio.async_sessionmaker
 
     def __init__(self,
                  *args,
+                 db_engine: sa_asyncio.AsyncEngine,
                  confg: config.Config = config.Config(),
                  secrets: config.Secret = config.Secret(),
                  **kwargs) -> None:
@@ -51,6 +58,7 @@ class Hetman(commands.AutoShardedBot):
 
         Args:
             *args: The arguments to pass to the super class.
+            db_engine: The database engine.
             confg: The config for the bot.
                 Defaults to `hetman.statvars.MiniConfig`.
             secrets: The secrets for the bot.
@@ -59,13 +67,19 @@ class Hetman(commands.AutoShardedBot):
             **kwargs: The keyword arguments to pass to the super class.
         """
         super().__init__(*args, **kwargs)
+        self._db_engine = db_engine
         self.stat_confg = confg
         self.hcli = Client(
-            token=secrets.htoken(),
+            token=secrets.token("hetzner"),
             application_name="Hetman Server Manager",
             application_version=const.VERSION,
         )
+        self.cfcli = AsyncCloudflare(
+            api_token=secrets.token("cloudflare"),
+            http_client=DefaultAioHttpClient(),
+        )
         del secrets
+        self.sessions = sa_asyncio.async_sessionmaker(self._db_engine, expire_on_commit=False)
 
     async def setup_hook(self) -> None:
         """Runs just before the bot connects to Discord.
@@ -91,4 +105,5 @@ class Hetman(commands.AutoShardedBot):
         We additionally clean up the database engine/pool.
         """
         logging.info("Closing bot...")
+        await self._db_engine.dispose()
         return await super().close()
