@@ -11,8 +11,7 @@ Typical usage example:
     #!/usr/bin/env python3
     import asyncio
     import hetman
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(hetman.start_bot(config))
+    asyncio.run(hetman.start_bot(conf=cnfg))
     ```
 """
 # License: EPL-2.0

@@ -27,9 +27,8 @@ def main():
     """
     print(f"Starting Hetman {const.VERSION}...")
     cnfg = config.Config()
-    loop = asyncio.get_event_loop()
     print("Brace for timeloop!")
-    loop.run_until_complete(hetman.start_bot(conf=cnfg))
+    asyncio.run(hetman.start_bot(conf=cnfg))
 
 
 if __name__ == "__main__":
