@@ -1,2 +1,9 @@
 dev_guild_id = 111111111111111
 # The ID of the guild with access to the override commands
+domain = "example.com"
+# The domain to subdomain for the servers.
+[shutdown]
+lookahead = 10
+# Minutes to shut down before the next billing hour if empty/no credits.
+lookbehind = 5
+# Minutes to take into consideration for activity BEFORE shutdow lookahead start.

@@ -1388,6 +1388,18 @@ spelling = ["pyenchant (>=3.2,<4.0)"]
 testutils = ["gitpython (>3)"]
 
 [[package]]
+name = "python-a2s"
+version = "1.4.1"
+description = "Query Source and GoldSource servers for name, map, players and more."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "python_a2s-1.4.1-py3-none-any.whl", hash = "sha256:c2320a1135d8e0c20da98b2aca164094c57f1557c05b22e73865e1f14469c810"},
+    {file = "python_a2s-1.4.1.tar.gz", hash = "sha256:b30fe1356ac2cbdfa83fb2eec63629801d2abf4cd169ab5dfaf354545cddcf79"},
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -1796,4 +1808,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "0ec7df42965af67cc697e1b844f5ca10bc230900c586981aa508e7490060dffe"
+content-hash = "733676760332d80e3f42403bd23904d068a0affb1bca2a251d8e6d471a20f538"

@@ -72,3 +72,50 @@ class Confirm(discord.ui.View):
         self.value = False
         button.disabled = True
         self.stop()
+
+
+class LocationSelectView(discord.ui.View):
+    def __init__(self, valid_locations: list, server_type, author_id: int):
+        super().__init__(timeout=60.0)
+        self.value = None
+        self.author_id = author_id
+
+        options = []
+        for loc in valid_locations:
+            # Find the dynamic price for this specific location to display to the user
+            price = 0.0
+            for p in server_type.prices:
+                if p['location'] == loc.name:
+                    price = float(p['price_hourly']['gross'])
+                    break
+
+            options.append(
+                discord.SelectOption(
+                    label=f"{loc.description} ({loc.name})",
+                    description=f"Cost: €{price:.3f} / hour",
+                    value=loc.name,
+                    emoji="🌍"
+                )
+            )
+
+        self.select = discord.ui.Select(
+            placeholder="Select a Datacenter Location...",
+            min_values=1,
+            max_values=1,
+            options=options[:25]
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This menu is not for you.", ephemeral=True)
+            return
+
+        self.value = self.select.values[0]
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(content=f"🌍 Selected **{self.value}**. Booting server...", view=self)
+        self.stop()

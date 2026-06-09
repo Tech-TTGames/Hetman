@@ -17,6 +17,7 @@ Typical usage example:
 # Copyright (c) 2023-present Tech. TTGames
 
 import datetime
+import uuid
 import enum
 
 import sqlalchemy
@@ -46,20 +47,23 @@ class Base(orm.DeclarativeBase):
 class Server(Base):
     __tablename__ = "servers"
 
-    id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.Integer, primary_key=True)
+    id: orm.Mapped[uuid.UUID] = orm.mapped_column(sqlalchemy.UUID, primary_key=True, default=uuid.uuid7)
     name: orm.Mapped[str] = orm.mapped_column(sqlalchemy.String, unique=True)
     discord_id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, index=True)
     role_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
 
     # Hetzner Data
     hcloud_server_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
-    current_snapshot_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
+    current_snapshot_id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger)
     status: orm.Mapped[Status] = orm.mapped_column(sqlalchemy.Enum(Status), default=Status.OFFLINE)
+    server_type: orm.Mapped[str] = orm.mapped_column(sqlalchemy.Integer, default="cx23")
 
     # Billing Data
     start_time: orm.Mapped[datetime.datetime | None] = orm.mapped_column(sqlalchemy.DateTime, nullable=True)
     credits: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.0)
     snapshot_reserve: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.5)
+    cost_per_hour: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.05)
+    stop_requested: orm.Mapped[bool] = orm.mapped_column(sqlalchemy.Boolean, default=False)
 
     # Connection Data
     ip_address: orm.Mapped[str | None] = orm.mapped_column(sqlalchemy.String, nullable=True)
