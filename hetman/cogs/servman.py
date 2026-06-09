@@ -48,7 +48,7 @@ class ServerManager(commands.Cog):
         spindown_minute = 60 - lookahead
         polling_start_minute = spindown_minute - lookbehind
 
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         async with self.bot.sessions.begin() as session:
             servers = await session.scalars(
@@ -66,7 +66,7 @@ class ServerManager(commands.Cog):
                 minute_of_hour = int((delta_seconds / 60) % 60)
 
                 # --- PHASE 1: THE LOOKBEHIND WINDOW (Minutes 45 - 49) ---
-                if polling_start_minute <= minute_of_hour < spindown_minute:
+                if polling_start_minute <= minute_of_hour <= spindown_minute:
                     try:
                         info = await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
                         if info.player_count > 0:
@@ -77,7 +77,7 @@ class ServerManager(commands.Cog):
                         pass
 
                 # --- PHASE 2: THE DECISION CROSSROADS (Minute 50) ---
-                elif minute_of_hour == spindown_minute:
+                if minute_of_hour == spindown_minute:
                     # Credit check
                     if server.credits < (server.snapshot_reserve + server.cost_per_hour):
                         logging.warning(
@@ -138,7 +138,7 @@ class ServerManager(commands.Cog):
             await asyncio.to_thread(shutdown_task.wait_until_finished, 1)
 
             # --- STEP 3: TRIGGER SNAPSHOT ---
-            timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
             snap_name = f"Hetman Snapshot {server.name} at {timestamp}"
 
             snapshot_task: CreateImageResponse = await asyncio.to_thread(hetzner_server.create_image, description=snap_name)
@@ -176,13 +176,26 @@ class ServerManager(commands.Cog):
             del_task = await asyncio.to_thread(hetzner_server.delete)
             await asyncio.to_thread(del_task.wait_until_finished, 1)
 
-            # --- STEP 6: RESET RECORD FOR CHILLING ---
+            # --- STEP 6: BIN DDNS ---
+            try:
+                if server.cloudflare_record_id:
+                    await self.bot.cfcli.dns.records.delete(
+                        dns_record_id=server.cloudflare_record_id,
+                        zone_id=server.cloudflare_zone_id,
+                    )
+                    logging.info(f"[SHUTDOWN] DNS record for '{server.name}' successfully deleted.")
+            except Exception as e:
+                logging.warning(
+                    f"[SHUTDOWN] Failed to delete DNS record for '{server.name}'. It may require manual cleanup. Error: {e}")
+
+            # --- STEP 7: RESET RECORD FOR CHILLING ---
             async with self.bot.sessions.begin() as session:
                 session.add(server)
                 await session.refresh(server)
                 server.status = models.Status.OFFLINE
                 server.hcloud_server_id = None
                 server.ip_address = None
+                server.cloudflare_record_id = None
 
             logging.info(f"[SHUTDOWN] Server '{server.name}' is fully offline and deleted from cloud billing.")
 
@@ -389,15 +402,18 @@ class ServerManager(commands.Cog):
             await asyncio.to_thread(create_task.action.wait_until_finished, 1)
             new_ip = new_node.public_net.ipv4.ip
 
-            await self.bot.cfcli.dns.records.update(
-                dns_record_id=server.cloudflare_record_id,
-                zone_id=server.cloudflare_zone_id,
-                name=f"hetman-{safe_name}.{self.bot.stat_confg['domain']}",
-                ttl=60,
-                type="A",
-                content=new_ip,
-                proxied=False,
-            )
+            try:
+                record = await self.bot.cfcli.dns.records.create(
+                    zone_id=server.cloudflare_zone_id,
+                    name=f"hetman-{safe_name}.{self.bot.stat_confg['domain']}",
+                    ttl=60,
+                    type="A",
+                    content=new_ip,
+                    proxied=False,
+                )
+            except Exception as e:
+                logging.warning(f"[STARTUP] Failed to create DNS record for {safe_name}: {e}")
+                await ctx.followup.send(f"Failed to create DNS record. Contact bot admin.", ephemeral=True)
 
             # --- PHASE 6: FINALIZE DATABASE STATE & DEDUCT CREDIT ---
             async with self.bot.sessions.begin() as session:
@@ -408,6 +424,7 @@ class ServerManager(commands.Cog):
                     server.cost_per_hour = total_cost
                     server.credits -= total_cost  # Secure upfront hour deduction
                     server.start_time = datetime.datetime.now(datetime.timezone.utc)
+                    server.cloudflare_record_id = record.id
 
             embed_success = discord.Embed(
                 title="Server Online",
