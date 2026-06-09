@@ -137,7 +137,7 @@ class ServerManager(commands.Cog):
                 logging.info(f"[SHUTDOWN] Requesting graceful ACPI shutdown for '{server.name}'.")
                 shutdown_task = await asyncio.to_thread(hetzner_server.shutdown)
 
-            await asyncio.to_thread(shutdown_task.wait_until_finished, 1)
+            await asyncio.to_thread(shutdown_task.wait_until_finished)
 
             # --- STEP 3: TRIGGER SNAPSHOT ---
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
@@ -155,7 +155,7 @@ class ServerManager(commands.Cog):
 
             # Long running block happens completely OUTSIDE an open SQL transaction
             logging.info(f"[SHUTDOWN] Snapshot triggered. Polling cloud tracking action for '{server.name}'...")
-            await asyncio.to_thread(snapshot_task.action.wait_until_finished, 1)
+            await asyncio.to_thread(snapshot_task.action.wait_until_finished)
 
             # --- STEP 4: CLEAN UP OLD SNAPSHOT ---
             try:
@@ -176,7 +176,7 @@ class ServerManager(commands.Cog):
             logging.info(
                 f"[SHUTDOWN] Retaining snapshot complete. Instructing Hetzner to drop server node '{server.name}'...")
             del_task = await asyncio.to_thread(hetzner_server.delete)
-            await asyncio.to_thread(del_task.wait_until_finished, 1)
+            await asyncio.to_thread(del_task.wait_until_finished)
 
             # --- STEP 6: BIN DDNS ---
             try:
@@ -371,7 +371,7 @@ class ServerManager(commands.Cog):
                     hourly_cost = float(price_data['price_hourly']['gross'])
                     break
 
-            ipv4_cost = 0.00098
+            ipv4_cost = self.bot.stat_confg['ipv4_cost']
             total_cost = hourly_cost + ipv4_cost
 
             async with self.bot.sessions.begin() as session:
@@ -407,7 +407,7 @@ class ServerManager(commands.Cog):
             )
 
             new_node = create_task.server
-            await asyncio.to_thread(create_task.action.wait_until_finished, 1)
+            await asyncio.to_thread(create_task.action.wait_until_finished)
             new_ip = new_node.public_net.ipv4.ip
 
             try:
@@ -422,6 +422,7 @@ class ServerManager(commands.Cog):
             except Exception as e:
                 logging.warning(f"[STARTUP] Failed to create DNS record for {safe_name}: {e}")
                 await ctx.followup.send(f"Failed to create DNS record. Contact bot admin.", ephemeral=True)
+                record = None
 
             # --- PHASE 6: FINALIZE DATABASE STATE & DEDUCT CREDIT ---
             async with self.bot.sessions.begin() as session:
@@ -432,7 +433,7 @@ class ServerManager(commands.Cog):
                     server.cost_per_hour = total_cost
                     server.credits -= total_cost  # Secure upfront hour deduction
                     server.start_time = datetime.datetime.now(datetime.timezone.utc)
-                    server.cloudflare_record_id = record.id
+                    server.cloudflare_record_id = record.id if record else None
 
             embed_success = discord.Embed(
                 title="Server Online",
