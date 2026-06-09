@@ -35,6 +35,7 @@ PROG_DIR = pathlib.Path(__file__).parent.parent.parent.absolute()
 """The absolute path to the root directory of the bot."""
 INTENTS = discord.Intents.default()
 """The discord gateway intents that the bot uses."""
+pathlib.Path(PROG_DIR, "log").mkdir(parents=True, exist_ok=True)
 HANDLER = logging.handlers.RotatingFileHandler(
     filename=pathlib.Path(PROG_DIR, "log", "bot.log"),
     encoding="utf-8",

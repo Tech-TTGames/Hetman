@@ -1,0 +1,9 @@
+services:
+  kumo:
+    image: techttgames/hetman
+    container_name: hetman
+    restart: unless-stopped
+    volumes:
+      - ./secret.toml:/app/secret.toml:ro
+      - ./config.toml:/app/config.toml:ro
+      - ./hetman.db:/app/hetman.db
