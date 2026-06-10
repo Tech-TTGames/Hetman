@@ -88,8 +88,8 @@ class ServerManager(commands.Cog):
                 continue
 
             # Calculate current minute of the billed hour
-            if start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+            if server.start_time.tzinfo is None:
+                server.start_time = server.start_time.replace(tzinfo=datetime.timezone.utc)
             delta_seconds = (now - server.start_time).total_seconds()
             minute_of_hour = int((delta_seconds / 60) % 60)
 
@@ -175,7 +175,7 @@ class ServerManager(commands.Cog):
     async def before_watchdog(self):
         await self.bot.wait_until_ready()
 
-    async def spindown(self, server_db_id: int, forced: bool = False, public_reason: str | None = None):
+    async def spindown(self, server_db_id: uuid.UUID, forced: bool = False, public_reason: str | None = None):
         """Handles the transition to Status.SNAPSHOTTING and tears down the Hetzner node safely."""
 
         # --- STEP 1: INITIAL STATE LOCK (Short Session) ---
