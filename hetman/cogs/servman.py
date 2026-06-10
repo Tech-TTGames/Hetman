@@ -729,7 +729,7 @@ class ServerManager(commands.Cog):
             )
             embed.add_field(
                 name="🚀 Direct Launch Game",
-                value=f"```steam://run/892970//%2Bconnect%20{domain}%3A{game_port}```)```\n*Forces Valheim to bypass the main menu and connect directly to the domain on startup.*",
+                value=f"```steam://run/892970//%2Bconnect%20{domain}%3A{game_port}```\n*Forces Valheim to bypass the main menu and connect directly to the domain on startup.*",
                 inline=False
             )
 
