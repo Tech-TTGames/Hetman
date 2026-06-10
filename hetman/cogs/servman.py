@@ -35,10 +35,25 @@ class ServerManager(commands.Cog):
     def __init__(self, bot: Hetman):
         self.bot = bot
         self._activity_flags: Dict[int, bool] = {}
+        self._monitor_tasks: dict[uuid.UUID, asyncio.Task] = {}
         self.billing_watchdog.start()
 
     def cog_unload(self):
         self.billing_watchdog.cancel()
+        for task in self._monitor_tasks.values():
+            task.cancel()
+        self._monitor_tasks.clear()
+
+    def _monitor_task_done(self, server_uuid: uuid.UUID, task: asyncio.Task) -> None:
+        """Cleans up finished monitor tasks and logs unexpected worker failures."""
+        self._monitor_tasks.pop(server_uuid, None)
+
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            logging.exception(f"[MONITOR] On-demand monitor task crashed for server {server_uuid}: {exc}")
 
     @tasks.loop(minutes=1.0)
     async def billing_watchdog(self):
@@ -53,7 +68,7 @@ class ServerManager(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
 
         async with self.bot.sessions.begin() as session:
-            servers = await session.scalars(
+            servers = (await session.scalars(
                 select(models.Server).where(
                     models.Server.status.in_([
                         models.Status.ONLINE,
@@ -61,7 +76,7 @@ class ServerManager(commands.Cog):
                         models.Status.SNAPSHOTTING
                     ])
                 )
-            )
+            )).all()
 
         for server in servers:
             if not server.start_time:
@@ -270,10 +285,9 @@ class ServerManager(commands.Cog):
             # Reset server to a safe recovery state so it isn't locked up eternally
             async with self.bot.sessions.begin() as session:
                 server = await session.get(models.Server, server_db_id)
-                server.status = models.Status.OFFLINE
-                server.hcloud_server_id = None
-                server.ip_address = None
-                server.stop_requested = False
+                if server:
+                    server.status = models.Status.OFFLINE
+                    server.stop_requested = False
 
     async def send_log_dump(self, log_channel_id: int | None, embed: discord.Embed) -> None:
         """Internal helper to dispatch embeds to the designated text log channel safely."""
@@ -298,7 +312,9 @@ class ServerManager(commands.Cog):
         """Polls A2S until the game server comes up, then announces it."""
         async with self.bot.sessions.begin() as session:
             server = await session.get(models.Server, server_uuid)
-            domain = f"hetman-{server.name.lower().replace(' ', '-')}.{self.bot.stat_confg['domain']}"
+            safe_name = re.sub(r'[^a-z0-9-]', '', server.name.lower().replace(' ', '-'))
+            safe_name = re.sub(r'-+', '-', safe_name).strip('-')[:50]
+            domain = f"hetman-{safe_name}.{self.bot.stat_confg['domain']}"
 
         retries = 0
         while retries < 40:  # E.g., 40 retries * 5s = ~3.3 minutes max wait
@@ -309,8 +325,7 @@ class ServerManager(commands.Cog):
                     server = await session.get(models.Server, server_uuid)
                     server.status = models.Status.ONLINE
 
-                channel = self.bot.get_channel(server.log_channel_id)
-                if channel:
+                if server.log_channel_id:
                     embed = discord.Embed(
                         title="Server Online! 🟢",
                         description=f"**{server.name}** is fully booted and ready for players!",
@@ -318,14 +333,30 @@ class ServerManager(commands.Cog):
                     )
                     embed.add_field(name="Connect IP", value=f"`{server.ip_address}:{server.a2s_port-1}`", inline=False)
                     embed.add_field(name="Domain", value=f"`{domain}:{server.a2s_port-1}`", inline=False)
-                    await channel.send(embed=embed)
+                    await self.send_log_dump(server.log_channel_id, embed)
                 return
 
             except Exception:
                 await asyncio.sleep(5)
                 retries += 1
 
-        logging.warning(f"[A2S] Timeout waiting for game server {server.name} to boot.")
+        async with self.bot.sessions.begin() as session:
+            server = await session.get(models.Server, server_uuid)
+            if server:
+                server.status = models.Status.ONLINE
+
+                if server.log_channel_id:
+                    embed = discord.Embed(
+                        title="Server Booted With Query Warning ⚠️",
+                        description=(
+                            f"**{server.name}** hardware is running, but the game server did not respond to A2S queries in time.\n"
+                            "The server has been marked online so billing/activity checks can proceed, but live query data may be unavailable."
+                        ),
+                        color=discord.Color.orange()
+                    )
+                    self.bot.loop.create_task(self.send_log_dump(server.log_channel_id, embed))
+
+        logging.warning(f"[A2S] Timeout waiting for game server {server.name} to boot. Marked ONLINE with warning.")
 
     async def server_autocomplete_lim(self, ctx: discord.Interaction, current: str):
         """Autocomplete function for server commands."""
@@ -396,23 +427,25 @@ class ServerManager(commands.Cog):
 
             server.stop_requested = not cancel
 
-            if server.log_channel_id:
-                if cancel:
-                    title = "Shutdown Canceled 🟢"
-                    desc = f"The pending manual shutdown for **{server.name}** has been canceled by {ctx.user.mention}. The server will continue running normally."
-                    color = discord.Color.green()
-                else:
-                    title = "Shutdown Requested ⚠️"
-                    desc = f"A manual stop request has been filed for **{server.name}** by {ctx.user.mention}.\nThe server will safely power down at the end of the current billing hour."
-                    color = discord.Color.orange()
+            if cancel:
+                title = "Shutdown Canceled 🟢"
+                desc = f"The pending manual shutdown for **{server.name}** has been canceled by {ctx.user.mention}. The server will continue running normally."
+                color = discord.Color.green()
+                response_desc = f"The pending shutdown for **{server.name}** has been canceled."
+            else:
+                title = "Shutdown Requested ⚠️"
+                desc = f"A manual stop request has been filed for **{server.name}** by {ctx.user.mention}.\nThe server will safely power down at the end of the current billing hour."
+                color = discord.Color.orange()
+                response_desc = f"**{server.name}** has been flagged. It will safely shut down at the end of the current billing hour."
 
+            if server.log_channel_id:
                 announce_embed = discord.Embed(title=title, description=desc, color=color)
                 self.bot.loop.create_task(self.send_log_dump(server.log_channel_id, announce_embed))
 
             embed = discord.Embed(
-                title="Stop Requested",
-                description=f"**{server.name}** has been flagged. It will safely shut down at the end of the current billing hour.",
-                color=discord.Color.orange()
+                title=title,
+                description=response_desc,
+                color=color
             )
             await ctx.followup.send(embed=embed, ephemeral=True)
             logging.info(f"[STOP] Server stop request sent for '{server.name}' by {ctx.user.name}.")
@@ -480,6 +513,7 @@ class ServerManager(commands.Cog):
         )
         await ctx.followup.send(embed=embed_start, ephemeral=False)
 
+        new_node = None
         try:
             server_type = await asyncio.to_thread(self.bot.hcli.server_types.get_by_name, server.server_type)
             image = await asyncio.to_thread(self.bot.hcli.images.get_by_id, server.current_snapshot_id)
@@ -537,7 +571,7 @@ class ServerManager(commands.Cog):
 
             location = None
             for loc in server_type.locations:
-                if loc.name == selected_location_name:
+                if loc.location.name == selected_location_name:
                     location = loc.location
                     break
 
@@ -599,14 +633,31 @@ class ServerManager(commands.Cog):
 
         except Exception as e:
             logging.exception(f"[STARTUP] Critical error while spinning up {server.name}: {e}")
+            cleanup_succeeded = True
+            if new_node is not None:
+                try:
+                    del_task = await asyncio.to_thread(new_node.delete)
+                    await asyncio.to_thread(del_task.wait_until_finished)
+                    logging.info(f"[STARTUP] Cleaned up orphaned Hetzner node {new_node.id} after startup failure.")
+                except Exception as cleanup_error:
+                    cleanup_succeeded = False
+                    logging.warning(f"[STARTUP] Failed to delete server {new_node}: {cleanup_error}")
             async with self.bot.sessions.begin() as session:
                 server = await session.get(models.Server, server_uuid)
                 if server:
-                    server.status = models.Status.OFFLINE
+                    if cleanup_succeeded:
+                        server.status = models.Status.OFFLINE
+                        server.hcloud_server_id = None
+                        server.ip_address = None
+                        server.cloudflare_record_id = None
+                    else:
+                        server.status = models.Status.DELETING
+                        if new_node is not None:
+                            server.hcloud_server_id = new_node.id
 
             embed_fail = discord.Embed(
                 title="Startup Failed",
-                description=f"A critical error occurred while starting **{server.name}**.\nThe operation was aborted and credits were protected.",
+                description=f"A critical error occurred while starting **{server.name}**.\nThe operation was aborted.",
                 color=discord.Color.red()
             )
             await ctx.followup.send(embed=embed_fail)
@@ -683,6 +734,138 @@ class ServerManager(commands.Cog):
             embed.add_field(name="Est. Cost / Hour", value=f"€{server.cost_per_hour:.3f}", inline=True)
 
         await ctx.followup.send(embed=embed)
+
+    @app_commands.command(name="monitor",
+                          description="Starts a short-term tracking sequence to watch for hardware availability.")
+    @app_commands.describe(
+        server_id="The server profile whose hardware type you want to track.",
+        duration_minutes="How many minutes to poll before giving up (Max 60)."
+    )
+    @app_commands.autocomplete(server_id=server_autocomplete_lim)
+    @app_commands.guild_only()
+    async def monitor(self, ctx: discord.Interaction, server_id: str, duration_minutes: app_commands.Range[int, 1, 60] = 15) -> None:
+        """Tracks hardware availability on-demand for a set duration, then pings when found."""
+        await ctx.response.defer(ephemeral=True)
+
+        try:
+            server_uuid = uuid.UUID(server_id)
+        except ValueError:
+            await ctx.followup.send("Invalid server ID format.", ephemeral=True)
+            return
+
+        async with self.bot.sessions.begin() as session:
+            server = await session.get(models.Server, server_uuid)
+            if not server or server.discord_id != ctx.guild_id:
+                await ctx.followup.send("Server profile not found.", ephemeral=True)
+                return
+
+            is_owner = ctx.guild.owner_id == ctx.user.id
+            has_role = server.role_id and any(r.id == server.role_id for r in ctx.user.roles)
+            if not is_owner and not has_role:
+                embed = discord.Embed(description="You do not have permission to monitor this server.",
+                                      color=discord.Color.red())
+                await ctx.followup.send(embed=embed, ephemeral=True)
+                return
+
+            if server.status != models.Status.OFFLINE:
+                await ctx.followup.send(
+                    f"**{server.name}** is currently **{server.status.name}**. Monitoring is only available for offline profiles.",
+                    ephemeral=True,
+                )
+                return
+
+            target_hardware = server.server_type.lower()
+
+        if not server.log_channel_id:
+            await ctx.followup.send("This server profile does not have a valid log channel assigned.", ephemeral=True)
+            return
+
+        existing_task = self._monitor_tasks.get(server_uuid)
+        if existing_task and not existing_task.done():
+            await ctx.followup.send(
+                f"A monitor is already running for **{server.name}**.",
+                ephemeral=True,
+            )
+            return
+
+        # Immediate user feedback confirming tracking thread assignment
+        embed_tracking = discord.Embed(
+            title="🛰️ Tracker Deployed",
+            description=(
+                f"Now scanning Hetzner inventories for a **{target_hardware.upper()}** footprint.\n"
+                f"**Target Profile:** `{server.name}`\n"
+                f"**Window:** Checking once a minute for the next **{duration_minutes} minutes**."
+            ),
+            color=discord.Color.blue()
+        )
+        await ctx.followup.send(embed=embed_tracking, ephemeral=True)
+
+        # 2. Fire and forget the asynchronous background tracking task
+        task = self.bot.loop.create_task(
+            self._run_on_demand_monitor(
+                server.log_channel_id, server.role_id, server.name, target_hardware, duration_minutes
+            )
+        )
+        self._monitor_tasks[server_uuid] = task
+        task.add_done_callback(lambda finished_task: self._monitor_task_done(server_uuid, finished_task))
+
+    async def _run_on_demand_monitor(
+            self, channel_id: int, role_id: int | None,
+            server_name: str, target_hardware: str, duration_minutes: int
+    ):
+        """Internal worker task running the polling sequence outside SQL boundaries."""
+        logging.info(
+            f"[MONITOR] Starting short-term tracking instance for {server_name} ({target_hardware}) across {duration_minutes}m.")
+
+        loops_remaining = duration_minutes
+        role_ping = f"<@&{role_id}>" if role_id else "@here"
+
+        while loops_remaining > 0:
+            try:
+                server_types = await asyncio.to_thread(self.bot.hcli.server_types.get_all)
+
+                for s_type in server_types:
+                    if s_type.name.lower() == target_hardware:
+                        available_locs = [loc.name for loc in s_type.locations if loc.available]
+
+                        if available_locs:
+                            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                            embed = discord.Embed(
+                                title="⚡ Hetzner Stock Replenished!",
+                                description=f"A **{target_hardware.upper()}** node allocation has opened up for **{server_name}**!",
+                                color=discord.Color.brand_green()
+                            )
+                            embed.add_field(name="Locations",
+                                            value=", ".join([f"`{l.upper()}`" for l in available_locs]))
+                            embed.add_field(name="Action",
+                                            value="Execute `/start` immediately to secure the resource allocation!")
+                            allowed_mentions = discord.AllowedMentions(
+                                roles=True,
+                                everyone=role_id is None,
+                                users=False,
+                            )
+
+                            await channel.send(content=f"{role_ping} 🚨 Hardware is available!", embed=embed, allowed_mentions=allowed_mentions)
+
+                            logging.info(f"[MONITOR] Stock found for {server_name}. On-demand tracking complete.")
+                            return
+
+            except Exception as e:
+                logging.warning(f"[MONITOR-TASK] Transient network anomaly during stock lookup: {e}")
+
+            await asyncio.sleep(60.0)
+            loops_remaining -= 1
+
+        try:
+            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+            await channel.send(
+                embed=discord.Embed(
+                    description=f"⏳ *On-demand tracking window for **{server_name}** ({target_hardware.upper()}) has expired without finding stock.*",
+                    color=discord.Color.dark_gray()
+                )
+            )
+        except Exception:
+            pass
 
     @app_commands.command(name="register", description="[Owner] Registers a new Hetzner server configuration.")
     @app_commands.describe(

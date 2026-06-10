@@ -59,7 +59,7 @@ class Server(Base):
     hcloud_server_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
     current_snapshot_id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger)
     status: orm.Mapped[Status] = orm.mapped_column(sqlalchemy.Enum(Status), default=Status.OFFLINE)
-    server_type: orm.Mapped[str] = orm.mapped_column(sqlalchemy.Integer, default="cx23")
+    server_type: orm.Mapped[str] = orm.mapped_column(sqlalchemy.String, default="cx23")
 
     # Billing Data
     start_time: orm.Mapped[datetime.datetime | None] = orm.mapped_column(sqlalchemy.DateTime, nullable=True)

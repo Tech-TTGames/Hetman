@@ -83,17 +83,18 @@ class LocationSelectView(discord.ui.View):
         options = []
         for loc in valid_locations:
             # Find the dynamic price for this specific location to display to the user
+            eloc = loc.location
             price = 0.0
             for p in server_type.prices:
-                if p['location'] == loc.name:
+                if p['location'] == eloc.name:
                     price = float(p['price_hourly']['gross'])
                     break
 
             options.append(
                 discord.SelectOption(
-                    label=f"{loc.description} ({loc.name})",
+                    label=f"{eloc.description} ({eloc.name})",
                     description=f"Cost: €{price:.3f} / hour",
-                    value=loc.name,
+                    value=eloc.name,
                     emoji="🌍"
                 )
             )
