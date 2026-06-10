@@ -20,7 +20,7 @@ import colorama
 
 import discord
 
-VERSION = "v0.0.1"
+VERSION = "v0.0.2"
 """The current version of the bot as a string.
 
 FORMAT:

@@ -22,6 +22,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks, commands
 from sqlalchemy import select
+from hcloud import APIException
 from hcloud.servers import BoundServer, ServerCreatePublicNetwork
 from hcloud.images import BoundImage, CreateImageResponse
 
@@ -54,6 +55,28 @@ class ServerManager(commands.Cog):
             task.result()
         except Exception as exc:
             logging.exception(f"[MONITOR] On-demand monitor task crashed for server {server_uuid}: {exc}")
+
+    async def _safe_wait_action(self, action, server_name: str, action_type: str = "action",
+                                max_retries: int = 5) -> bool:
+        """
+        Helper to reliably poll Hetzner actions while catching and absorbing
+        transient API exceptions (like 500 Internal Server Error).
+        """
+
+        for attempt in range(max_retries):
+            try:
+                await asyncio.to_thread(action.wait_until_finished)
+                return True
+            except APIException as e:
+                if attempt < max_retries - 1:
+                    logging.warning(
+                        f"[{action_type.upper()}] Transient API error polling for '{server_name}' (Attempt {attempt + 1}): {e}. Retrying in 10s...")
+                    await asyncio.sleep(10)
+                else:
+                    logging.error(
+                        f"[{action_type.upper()}] Polling failed permanently for '{server_name}'. Proceeding to prevent pipeline lockup.")
+                    return False
+        return False
 
     @tasks.loop(minutes=1.0)
     async def billing_watchdog(self):
@@ -217,7 +240,7 @@ class ServerManager(commands.Cog):
                 logging.info(f"[SHUTDOWN] Requesting graceful ACPI shutdown for '{server.name}'.")
                 shutdown_task = await asyncio.to_thread(hetzner_server.shutdown)
 
-            await asyncio.to_thread(shutdown_task.wait_until_finished)
+            await self._safe_wait_action(shutdown_task, server.name, "power_down")
 
             # --- STEP 3: TRIGGER SNAPSHOT ---
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
@@ -235,7 +258,7 @@ class ServerManager(commands.Cog):
 
             # Long running block happens completely OUTSIDE an open SQL transaction
             logging.info(f"[SHUTDOWN] Snapshot triggered. Polling cloud tracking action for '{server.name}'...")
-            await asyncio.to_thread(snapshot_task.action.wait_until_finished)
+            await self._safe_wait_action(snapshot_task.action, server.name, "snapshot")
 
             # --- STEP 4: CLEAN UP OLD SNAPSHOT ---
             try:
@@ -256,7 +279,7 @@ class ServerManager(commands.Cog):
             logging.info(
                 f"[SHUTDOWN] Retaining snapshot complete. Instructing Hetzner to drop server node '{server.name}'...")
             del_task = await asyncio.to_thread(hetzner_server.delete)
-            await asyncio.to_thread(del_task.wait_until_finished)
+            await self._safe_wait_action(del_action, server.name, "delete")
 
             # --- STEP 6: BIN DDNS ---
             try:
@@ -599,7 +622,7 @@ class ServerManager(commands.Cog):
             )
 
             new_node = create_task.server
-            await asyncio.to_thread(create_task.action.wait_until_finished)
+            await self._safe_wait_action(create_task.action, server.name, "provisioning")
             new_ip = new_node.public_net.ipv4.ip
 
             async with self.bot.sessions.begin() as session:
@@ -645,7 +668,7 @@ class ServerManager(commands.Cog):
             if new_node is not None:
                 try:
                     del_task = await asyncio.to_thread(new_node.delete)
-                    await asyncio.to_thread(del_task.wait_until_finished)
+                    await self._safe_wait_action(del_task,server.name, "deleting")
                     logging.info(f"[STARTUP] Cleaned up orphaned Hetzner node {new_node.id} after startup failure.")
                 except Exception as cleanup_error:
                     cleanup_succeeded = False
