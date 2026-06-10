@@ -838,7 +838,7 @@ class ServerManager(commands.Cog):
 
                 for s_type in server_types:
                     if s_type.name.lower() == target_hardware:
-                        available_locs = [loc.name for loc in s_type.locations if loc.available]
+                        available_locs = [loc.location.name for loc in s_type.locations if loc.available]
 
                         if available_locs:
                             channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
