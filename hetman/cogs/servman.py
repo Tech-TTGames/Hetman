@@ -83,7 +83,7 @@ class ServerManager(commands.Cog):
                 await self.bot.loop.create_task(
                     self.spindown(server.id,
                                   public_reason=f"**{server.name}** was forced offline due to a missing internal startup timestamp.")
-                )1
+                )
                 logging.warning(f"[STARTUP] Server '{server.name}' has no start time. Forcing spindown.")
                 continue
 
@@ -720,6 +720,16 @@ class ServerManager(commands.Cog):
             embed.add_field(
                 name="Connection Details",
                 value=f"**Domain:** `{domain}:{game_port}`\n**Direct IP:** `{server.ip_address}:{game_port}`",
+                inline=False
+            )
+            embed.add_field(
+                name="🔗 Join via Steam Browser",
+                value=f"[Click to Connect](steam://connect/{domain}:{server.a2s_port})\n*Opens Steam dialog. Ignore the Steam password box; type your password inside Valheim once it launches.*",
+                inline=False
+            )
+            embed.add_field(
+                name="🚀 Direct Launch Game",
+                value=f"[Click to Launch](steam://run/892970//%2Bconnect%20{domain}%3A{game_port})\n*Forces Valheim to bypass the main menu and connect directly to the domain on startup.*",
                 inline=False
             )
 
