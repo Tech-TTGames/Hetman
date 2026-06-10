@@ -83,11 +83,13 @@ class ServerManager(commands.Cog):
                 await self.bot.loop.create_task(
                     self.spindown(server.id,
                                   public_reason=f"**{server.name}** was forced offline due to a missing internal startup timestamp.")
-                )
+                )1
                 logging.warning(f"[STARTUP] Server '{server.name}' has no start time. Forcing spindown.")
                 continue
 
             # Calculate current minute of the billed hour
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=datetime.timezone.utc)
             delta_seconds = (now - server.start_time).total_seconds()
             minute_of_hour = int((delta_seconds / 60) % 60)
 
