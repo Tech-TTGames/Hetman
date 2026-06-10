@@ -590,6 +590,12 @@ class ServerManager(commands.Cog):
                 image=image,
                 location=location,
                 public_net=network_cnfg,
+                user_data=(
+                    "#cloud-config\n"
+                    "users:\n"
+                    "  - name: root\n"
+                    "    lock_passwd: true\n"
+                )
             )
 
             new_node = create_task.server
