@@ -724,12 +724,12 @@ class ServerManager(commands.Cog):
             )
             embed.add_field(
                 name="🔗 Join via Steam Browser",
-                value=f"[Click to Connect](steam://connect/{domain}:{server.a2s_port})\n*Opens Steam dialog. Ignore the Steam password box; type your password inside Valheim once it launches.*",
+                value=f"```steam://connect/{domain}:{server.a2s_port}```\n*Opens Steam dialog. Ignore the Steam password box; type your password inside Valheim once it launches.*",
                 inline=False
             )
             embed.add_field(
                 name="🚀 Direct Launch Game",
-                value=f"[Click to Launch](steam://run/892970//%2Bconnect%20{domain}%3A{game_port})\n*Forces Valheim to bypass the main menu and connect directly to the domain on startup.*",
+                value=f"```steam://run/892970//%2Bconnect%20{domain}%3A{game_port}```)```\n*Forces Valheim to bypass the main menu and connect directly to the domain on startup.*",
                 inline=False
             )
 
