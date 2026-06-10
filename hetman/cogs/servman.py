@@ -699,11 +699,11 @@ class ServerManager(commands.Cog):
             self,
             ctx: discord.Interaction,
             name: str,
-            snapshot_id: int,
+            snapshot_id: str,
             target_guild_id: str,
             server_type: str = "cx22",
-            role_id: int | None = None,
-            log_channel_id: int | None = None,
+            role_id: str | None = None,
+            log_channel_id: str | None = None,
     ) -> None:
         """Registers a new server to the database.
 
@@ -726,6 +726,9 @@ class ServerManager(commands.Cog):
 
         async with self.bot.sessions.begin() as session:
             existing = await session.scalar(select(models.Server).where(models.Server.name == name))
+            role_id = int(role_id) if role_id else None
+            snapshot_id = int(snapshot_id)
+            log_channel_id = int(log_channel_id) if log_channel_id else None
             if existing:
                 await ctx.followup.send(f"A server named `{name}` already exists!", ephemeral=True)
                 return
@@ -775,14 +778,14 @@ class ServerManager(commands.Cog):
             ctx: discord.Interaction,
             server_id: str,
             name: str | None = None,
-            snapshot_id: int | None = None,
+            snapshot_id: str | None = None,
             target_guild_id: str | None = None,
             server_type: str | None = None,
-            role_id: int | None = None,
+            role_id: str | None = None,
             clear_role: bool = False,
-            a2s_port: int | None = None,
+            a2s_port: str | None = None,
             snapshot_reserve: float | None = None,
-            log_channel_id: int | None = None,
+            log_channel_id: str | None = None,
     ) -> None:
         """Edits an existing server in the database.
 
@@ -833,20 +836,20 @@ class ServerManager(commands.Cog):
 
             # Apply updates
             if snapshot_id is not None:
-                server.current_snapshot_id = snapshot_id
+                server.current_snapshot_id = int(snapshot_id)
             if guild_id_int is not None:
                 server.discord_id = guild_id_int
             if server_type is not None:
                 server.server_type = server_type
             if a2s_port is not None:
-                server.a2s_port = a2s_port
+                server.a2s_port = int(a2s_port)
             if snapshot_reserve is not None:
                 server.snapshot_reserve = snapshot_reserve
             if log_channel_id is not None:
-                server.log_channel_id = log_channel_id
+                server.log_channel_id = int(log_channel_id)
 
             if role_id is not None:
-                server.role_id = role_id
+                server.role_id = int(role_id)
             elif clear_role:
                 server.role_id = None
 
