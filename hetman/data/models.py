@@ -29,6 +29,8 @@ class Status(int, enum.Enum):
     ONLINE = 1
     SNAPSHOTTING = 2
     DELETING = 3
+    PROVISIONING = 4
+    STARTING = 5
 
 
 class Base(orm.DeclarativeBase):
@@ -51,6 +53,7 @@ class Server(Base):
     name: orm.Mapped[str] = orm.mapped_column(sqlalchemy.String, unique=True)
     discord_id: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, index=True)
     role_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
+    log_channel_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)
 
     # Hetzner Data
     hcloud_server_id: orm.Mapped[int | None] = orm.mapped_column(sqlalchemy.BigInteger, nullable=True)

@@ -54,60 +54,111 @@ class ServerManager(commands.Cog):
 
         async with self.bot.sessions.begin() as session:
             servers = await session.scalars(
-                select(models.Server).where(models.Server.status == models.Status.ONLINE)
+                select(models.Server).where(
+                    models.Server.status.in_([
+                        models.Status.ONLINE,
+                        models.Status.STARTING,
+                        models.Status.SNAPSHOTTING
+                    ])
+                )
             )
 
-            for server in servers:
-                if not server.start_time:
-                    await self.bot.loop.create_task(self.spindown(server.id))
-                    logging.warning(f"[STARTUP] Server '{server.name}' has no start time. Forcing spindown.")
-                    continue
+        for server in servers:
+            if not server.start_time:
+                await self.bot.loop.create_task(
+                    self.spindown(server.id,
+                                  public_reason=f"**{server.name}** was forced offline due to a missing internal startup timestamp.")
+                )
+                logging.warning(f"[STARTUP] Server '{server.name}' has no start time. Forcing spindown.")
+                continue
 
-                # Calculate current minute of the billed hour
-                delta_seconds = (now - server.start_time).total_seconds()
-                minute_of_hour = int((delta_seconds / 60) % 60)
+            # Calculate current minute of the billed hour
+            delta_seconds = (now - server.start_time).total_seconds()
+            minute_of_hour = int((delta_seconds / 60) % 60)
 
-                # --- PHASE 1: THE LOOKBEHIND WINDOW (Minutes 45 - 49) ---
-                if polling_start_minute <= minute_of_hour <= spindown_minute:
+            # --- PHASE 1: THE LOOKBEHIND WINDOW (Minutes 45 - 49) ---
+            if polling_start_minute <= minute_of_hour <= spindown_minute and server.status == models.Status.ONLINE:
+                if minute_of_hour == polling_start_minute and server.log_channel_id:
                     try:
-                        info = await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
-                        if info.player_count > 0:
-                            self._activity_flags[server.id] = True
+                        channel = self.bot.get_channel(server.log_channel_id) or await self.bot.fetch_channel(
+                            server.log_channel_id)
+                        if channel:
+                            embed = discord.Embed(
+                                title="Activity Check Monitoring ⏳",
+                                description=f"**{server.name}** has entered its scheduled activity verification window.\nIf the server remains empty for the next **{lookbehind} minutes**, it will automatically spin down to preserve credits.",
+                                color=discord.Color.blue()
+                            )
+                            await channel.send(embed=embed)
                     except Exception as e:
-                        # If server times out/reboots, treat as empty for this check tick
-                        logging.warning(f"[ACTIVITY] Server '{server.name}' timed out or rebooted. Treating as empty. Details: {e}")
-                        pass
+                        logging.warning(f"[NOTIFY] Failed to broadcast polling start notice: {e}")
 
-                # --- PHASE 2: THE DECISION CROSSROADS (Minute 50) ---
-                if minute_of_hour == spindown_minute:
-                    # Credit check
-                    if server.credits < (server.snapshot_reserve + server.cost_per_hour):
-                        logging.warning(
-                            f"[FINANCE] Server '{server.name}' has insufficient credits for another hour. Forcing spindown.")
-                        self.bot.loop.create_task(self.spindown(server.id))
-                        continue
+                try:
+                    info = await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
+                    if info.player_count > 0:
+                        self._activity_flags[server.id] = True
+                except Exception as e:
+                    logging.warning(
+                        f"[ACTIVITY] Server '{server.name}' timed out or rebooted. Treating as empty. Details: {e}")
+                    pass
 
-                    # Activity check
-                    was_active = self._activity_flags.get(server.id, False)
+            # --- PHASE 2: THE DECISION CROSSROADS (Minute 50) ---
+            if minute_of_hour == spindown_minute and server.status == models.Status.ONLINE:
+                was_active = self._activity_flags.get(server.id, False)
 
-                    if not was_active or server.stop_requested:
-                        logging.info(
-                            f"[ACTIVITY] Server '{server.name}' remained empty during lookbehind or was requested to stop. Soft spindown triggered.")
-                        self.bot.loop.create_task(self.spindown(server.id))
-                    else:
-                        self._activity_flags[server.id] = False
+                if server.stop_requested:
+                    reason = f"**{server.name}** has been shut down via user command request."
+                    logging.info(f"[ACTIVITY] Server '{server.name}' stop requested. Soft spindown triggered.")
+                    self.bot.loop.create_task(self.spindown(server.id, public_reason=reason))
+                elif not was_active:
+                    reason = f"**{server.name}** has gone to sleep due to inactivity during the lookbehind window."
+                    logging.info(f"[ACTIVITY] Server '{server.name}' remained empty. Soft spindown triggered.")
+                    self.bot.loop.create_task(self.spindown(server.id, public_reason=reason))
+                else:
+                    self._activity_flags[server.id] = False
 
-                # --- PHASE 3: THE RESET (Minute 0 of the next hour) ---
-                elif minute_of_hour == 0 and delta_seconds > 60:
-                    self._activity_flags.pop(server.id, None)
-                    server.credits -= server.cost_per_hour
-                    logging.info(f"[FINANCE] Server '{server.name}' has been reset for another hour.")
+            # Credit check - 5 minutes left in the billed hour
+            elif minute_of_hour == 55 and server.status != models.Status.SNAPSHOTTING:
+                if server.credits < (server.snapshot_reserve + server.cost_per_hour):
+                    reason = f"**{server.name}** has insufficient credits to renew for another hour (Balance: €{server.credits:.2f}). Forcing shutdown."
+                    logging.warning(
+                        f"[FINANCE] Server '{server.name}' has insufficient credits. Forcing instant spindown.")
+                    self.bot.loop.create_task(self.spindown(server.id, forced=True, public_reason=reason))
+
+            # --- PHASE 3: THE RESET (Minute 0 of the next hour) ---
+            elif minute_of_hour == 0 and delta_seconds > 60:
+                self._activity_flags.pop(server.id, None)
+
+                async with self.bot.sessions.begin() as session:
+                    db_server = await session.get(models.Server, server.id)
+                    if db_server:
+                        db_server.credits -= db_server.cost_per_hour
+                        server.credits = db_server.credits  # Sync local detached memory instance
+
+                        if db_server.credits < (
+                                db_server.snapshot_reserve + db_server.cost_per_hour) and server.log_channel_id:
+                            try:
+                                channel = self.bot.get_channel(server.log_channel_id) or await self.bot.fetch_channel(
+                                    server.log_channel_id)
+                                if channel:
+                                    embed = discord.Embed(
+                                        title="Low Credit Warning ⚠️",
+                                        description=(
+                                            f"**{server.name}** has successfully renewed, but its remaining balance (**€{db_server.credits:.2f}**) cannot cover another cycle.\n\n"
+                                            f"This is officially the **final hour** of runtime unless the server is topped up.\n"
+                                            "We recommend you request a stop manually so no data is lost due to a forced stop 5 minutes before timeout."),
+                                        color=discord.Color.gold()
+                                    )
+                                    await channel.send(embed=embed)
+                            except Exception as e:
+                                logging.warning(f"[NOTIFY] Failed to broadcast low credit warning: {e}")
+
+                logging.info(f"[FINANCE] Server '{server.name}' has been reset for another hour.")
 
     @billing_watchdog.before_loop
     async def before_watchdog(self):
         await self.bot.wait_until_ready()
 
-    async def spindown(self, server_db_id: int, forced: bool = False):
+    async def spindown(self, server_db_id: int, forced: bool = False, public_reason: str | None = None):
         """Handles the transition to Status.SNAPSHOTTING and tears down the Hetzner node safely."""
 
         # --- STEP 1: INITIAL STATE LOCK (Short Session) ---
@@ -123,6 +174,18 @@ class ServerManager(commands.Cog):
                 return
 
             server.status = models.Status.SNAPSHOTTING
+
+        if server.log_channel_id:
+            if public_reason:
+                public_reason = f"**{server.name}** has been shut down for the following reason:\n{public_reason}"
+            else:
+                public_reason = f"**{server.name}** has been shut down."
+            embed = discord.Embed(
+                title="Server Stopping",
+                description=public_reason,
+                color=discord.Color.red()
+            )
+            await self.send_log_dump(server.log_channel_id, embed)
 
         logging.info(f"[SHUTDOWN] Server '{server.name}' set to SNAPSHOTTING. SQLite transaction released.")
 
@@ -212,6 +275,58 @@ class ServerManager(commands.Cog):
                 server.ip_address = None
                 server.stop_requested = False
 
+    async def send_log_dump(self, log_channel_id: int | None, embed: discord.Embed) -> None:
+        """Internal helper to dispatch embeds to the designated text log channel safely."""
+        if not log_channel_id:
+            return
+
+        # Try to resolve from cache first, fall back to API call if cold
+        channel = self.bot.get_channel(log_channel_id)
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(log_channel_id)
+            except Exception:
+                logging.warning(f"[NOTIFY] Could not access or resolve log channel ID {log_channel_id}")
+                return
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            logging.error(f"[NOTIFY] Failed to broadcast alert to channel {log_channel_id}: {e}")
+
+    async def wait_for_a2s(self, server_uuid: uuid.UUID):
+        """Polls A2S until the game server comes up, then announces it."""
+        async with self.bot.sessions.begin() as session:
+            server = await session.get(models.Server, server_uuid)
+            domain = f"hetman-{server.name.lower().replace(' ', '-')}.{self.bot.stat_confg['domain']}"
+
+        retries = 0
+        while retries < 40:  # E.g., 40 retries * 5s = ~3.3 minutes max wait
+            try:
+                await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
+
+                async with self.bot.sessions.begin() as session:
+                    server = await session.get(models.Server, server_uuid)
+                    server.status = models.Status.ONLINE
+
+                channel = self.bot.get_channel(server.log_channel_id)
+                if channel:
+                    embed = discord.Embed(
+                        title="Server Online! 🟢",
+                        description=f"**{server.name}** is fully booted and ready for players!",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Connect IP", value=f"`{server.ip_address}:{server.a2s_port-1}`", inline=False)
+                    embed.add_field(name="Domain", value=f"`{domain}:{server.a2s_port-1}`", inline=False)
+                    await channel.send(embed=embed)
+                return
+
+            except Exception:
+                await asyncio.sleep(5)
+                retries += 1
+
+        logging.warning(f"[A2S] Timeout waiting for game server {server.name} to boot.")
+
     async def server_autocomplete_lim(self, ctx: discord.Interaction, current: str):
         """Autocomplete function for server commands."""
         async with self.bot.sessions.begin() as session:
@@ -225,15 +340,19 @@ class ServerManager(commands.Cog):
             return [app_commands.Choice(name=server.name, value=str(server.id)) for server in servers]
 
     @app_commands.command(name="stop", description="Requests a server to not renew on the next billing cycle.")
-    @app_commands.describe(server_id="The server to stop.")
+    @app_commands.describe(
+        server_id="The server to stop.",
+        cancel="Cancels the stop request if it's already in progress.",
+    )
     @app_commands.autocomplete(server_id=server_autocomplete_lim)
     @app_commands.guild_only()
-    async def stop(self, ctx: discord.Interaction, server_id: str) -> None:
+    async def stop(self, ctx: discord.Interaction, server_id: str, cancel: bool = False) -> None:
         """Requests a server to does not renew on the next billing cycle.
 
         Args:
             ctx: The interaction calling the command.
             server_id: The ID of the server to stop.
+            cancel: Cancels a pending request.
         """
         await ctx.response.defer(ephemeral=True)
 
@@ -256,8 +375,13 @@ class ServerManager(commands.Cog):
                 await ctx.followup.send(embed=embed, ephemeral=True)
                 return
 
-            if server.stop_requested:
+            if server.stop_requested and not cancel:
                 embed = discord.Embed(description="Server is already requested to stop.",
+                                      color=discord.Color.orange())
+                await ctx.followup.send(embed=embed, ephemeral=True)
+                return
+            if not server.stop_requested and cancel:
+                embed = discord.Embed(description="Server is not currently requested to stop.",
                                       color=discord.Color.orange())
                 await ctx.followup.send(embed=embed, ephemeral=True)
                 return
@@ -270,7 +394,20 @@ class ServerManager(commands.Cog):
                 await ctx.followup.send(embed=embed, ephemeral=True)
                 return
 
-            server.stop_requested = True
+            server.stop_requested = not cancel
+
+            if server.log_channel_id:
+                if cancel:
+                    title = "Shutdown Canceled 🟢"
+                    desc = f"The pending manual shutdown for **{server.name}** has been canceled by {ctx.user.mention}. The server will continue running normally."
+                    color = discord.Color.green()
+                else:
+                    title = "Shutdown Requested ⚠️"
+                    desc = f"A manual stop request has been filed for **{server.name}** by {ctx.user.mention}.\nThe server will safely power down at the end of the current billing hour."
+                    color = discord.Color.orange()
+
+                announce_embed = discord.Embed(title=title, description=desc, color=color)
+                self.bot.loop.create_task(self.send_log_dump(server.log_channel_id, announce_embed))
 
             embed = discord.Embed(
                 title="Stop Requested",
@@ -326,8 +463,16 @@ class ServerManager(commands.Cog):
                 await ctx.followup.send(embed=embed, ephemeral=True)
                 return
 
-            server.status = models.Status.ONLINE
+            server.status = models.Status.PROVISIONING
             server.stop_requested = False
+
+        if server.log_channel_id:
+            boot_embed = discord.Embed(
+                title="Server Booting",
+                description=f"A startup sequence has been initiated for **{server.name}** by {ctx.user.mention}.\nWe are requesting hardware from the datacenter now...",
+                color=discord.Color.blue()
+            )
+            self.bot.loop.create_task(self.send_log_dump(server.log_channel_id, boot_embed))
 
         embed_start = discord.Embed(
             description=f"Beginning startup sequence for **{server.name}**...",
@@ -341,7 +486,12 @@ class ServerManager(commands.Cog):
 
             valid_locations = [loc for loc in server_type.locations if loc.available]
             if not valid_locations:
-                raise ValueError("No locations currently available for this server type.")
+                embed_no_loc = discord.Embed(description="No available locations for this server type.", color=discord.Color.red())
+                await ctx.followup.send(embed=embed_no_loc, ephemeral=True)
+                async with self.bot.sessions.begin() as session:
+                    server = await session.get(models.Server, server_uuid)
+                    server.status = models.Status.OFFLINE
+                return
 
             view = views.LocationSelectView(valid_locations, server_type, ctx.user.id)
 
@@ -410,6 +560,16 @@ class ServerManager(commands.Cog):
             await asyncio.to_thread(create_task.action.wait_until_finished)
             new_ip = new_node.public_net.ipv4.ip
 
+            async with self.bot.sessions.begin() as session:
+                server = await session.get(models.Server, server_uuid)
+                if server:
+                    server.status = models.Status.STARTING
+                    server.hcloud_server_id = new_node.id
+                    server.cost_per_hour = total_cost
+                    server.credits -= total_cost  # Secure upfront hour deduction
+                    server.start_time = datetime.datetime.now(datetime.timezone.utc)
+                    server.ip_address = new_ip
+
             try:
                 record = await self.bot.cfcli.dns.records.create(
                     zone_id=server.cloudflare_zone_id,
@@ -424,27 +584,18 @@ class ServerManager(commands.Cog):
                 await ctx.followup.send(f"Failed to create DNS record. Contact bot admin.", ephemeral=True)
                 record = None
 
-            # --- PHASE 6: FINALIZE DATABASE STATE & DEDUCT CREDIT ---
             async with self.bot.sessions.begin() as session:
                 server = await session.get(models.Server, server_uuid)
                 if server:
-                    server.hcloud_server_id = new_node.id
-                    server.ip_address = new_ip
-                    server.cost_per_hour = total_cost
-                    server.credits -= total_cost  # Secure upfront hour deduction
-                    server.start_time = datetime.datetime.now(datetime.timezone.utc)
                     server.cloudflare_record_id = record.id if record else None
 
-            embed_success = discord.Embed(
-                title="Server Online",
-                description=f"**{server.name}** is online in **{selected_location_name}**!",
-                color=discord.Color.green()
+            embed_provisioned = discord.Embed(
+                title="Server Provisioned ⏳",
+                description=f"**{server.name}** hardware is running in **{selected_location_name}**.\nWaiting for the game server to respond...",
+                color=discord.Color.yellow()
             )
-            embed_success.add_field(name="IP Address", value=f"`{new_ip}`", inline=False)
-            embed_success.add_field(name="Domain (Wait ~60s)",
-                                    value=f"`hetman-{safe_name}.{self.bot.stat_confg['domain']}`", inline=False)
-
-            await ctx.followup.send(embed=embed_success)
+            await ctx.followup.send(embed=embed_provisioned)
+            self.bot.loop.create_task(self.wait_for_a2s(server_uuid))
 
         except Exception as e:
             logging.exception(f"[STARTUP] Critical error while spinning up {server.name}: {e}")
@@ -460,13 +611,87 @@ class ServerManager(commands.Cog):
             )
             await ctx.followup.send(embed=embed_fail)
 
+    @app_commands.command(name="info", description="Displays real-time information about a server.")
+    @app_commands.describe(server_id="The server to inspect.")
+    @app_commands.autocomplete(server_id=server_autocomplete_lim)
+    @app_commands.guild_only()
+    async def info(self, ctx: discord.Interaction, server_id: str) -> None:
+        await ctx.response.defer()
+
+        try:
+            server_uuid = uuid.UUID(server_id)
+        except ValueError:
+            await ctx.followup.send("Invalid server ID format.", ephemeral=True)
+            return
+
+        # Fetch and immediately release the database transaction
+        async with self.bot.sessions.begin() as session:
+            server = await session.get(models.Server, server_uuid)
+
+            if not server or server.discord_id != ctx.guild_id:
+                await ctx.followup.send("Server not found.", ephemeral=True)
+                return
+
+        # Determine color based on status
+        colors = {
+            models.Status.ONLINE: discord.Color.green(),
+            models.Status.OFFLINE: discord.Color.dark_gray(),
+            models.Status.PROVISIONING: discord.Color.blue(),
+            models.Status.STARTING: discord.Color.yellow(),
+            models.Status.SNAPSHOTTING: discord.Color.orange(),
+            models.Status.DELETING: discord.Color.red(),
+        }
+
+        embed = discord.Embed(
+            title=f"Server Info: {server.name}",
+            color=colors.get(server.status, discord.Color.blue())
+        )
+
+        # Highlight if a manual stop request has been queued
+        if server.stop_requested:
+            embed.description = "⚠️ **Pending Shutdown:** A stop request has been filed. The server will safely power down at the end of the current billing cycle."
+
+        embed.add_field(name="Status", value=f"**{server.status.name}**", inline=True)
+        embed.add_field(name="Credits Remaining", value=f"€{server.credits:.2f}", inline=True)
+        embed.add_field(name="Snapshot Reserve", value=f"€{server.snapshot_reserve:.2f}", inline=True)
+
+        if server.status == models.Status.ONLINE:
+            embed.add_field(name="Active Cost / Hour", value=f"€{server.cost_per_hour:.3f}", inline=True)
+
+            # Reconstruct the safe domain name for player display
+            safe_name = re.sub(r'[^a-z0-9-]', '', server.name.lower().replace(' ', '-'))
+            safe_name = re.sub(r'-+', '-', safe_name).strip('-')[:50]
+            domain = f"hetman-{safe_name}.{self.bot.stat_confg['domain']}"
+            game_port = server.a2s_port - 1
+
+            embed.add_field(
+                name="Connection Details",
+                value=f"**Domain:** `{domain}:{game_port}`\n**Direct IP:** `{server.ip_address}:{game_port}`",
+                inline=False
+            )
+
+            # Fetch Live A2S Data (Bumped timeout to 2.0s for safety)
+            try:
+                a2s_info = await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
+                embed.add_field(name="Game", value=a2s_info.game, inline=True)
+                embed.add_field(name="Players", value=f"{a2s_info.player_count} / {a2s_info.max_players}", inline=True)
+                embed.add_field(name="Map", value=a2s_info.map_name, inline=True)
+            except Exception:
+                embed.add_field(name="Live Data", value="⚠️ Game server is not responding to queries.", inline=False)
+        else:
+            # Display stale cost when offline
+            embed.add_field(name="Est. Cost / Hour", value=f"€{server.cost_per_hour:.3f}", inline=True)
+
+        await ctx.followup.send(embed=embed)
+
     @app_commands.command(name="register", description="[Owner] Registers a new Hetzner server configuration.")
     @app_commands.describe(
         name="A readable name for the server.",
         snapshot_id="The Hetzner image/snapshot ID to boot from.",
         target_guild_id="The ID of the Discord server this node belongs to.",
         server_type="The Hetzner server type (e.g., cx22, cpx31).",
-        role_id="Optional: A Discord role id of the role required to start/stop this server."
+        role_id="Optional: A Discord role id of the role required to start/stop this server.",
+        log_channel_id="Optional: The Discord channel for player-facing status updates (e.g., online/offline alerts).",
     )
     @checks.is_owner_check()
     @app_commands.guilds(_CNFG["dev_guild_id"])
@@ -477,7 +702,8 @@ class ServerManager(commands.Cog):
             snapshot_id: int,
             target_guild_id: str,
             server_type: str = "cx22",
-            role_id: int | None = None
+            role_id: int | None = None,
+            log_channel_id: int | None = None,
     ) -> None:
         """Registers a new server to the database.
 
@@ -488,6 +714,7 @@ class ServerManager(commands.Cog):
             target_guild_id: The Discord ID of the guild this server belongs to.
             server_type: Hetzner server type to provision.
             role_id: The role id to assign permission to start/stop the server in the guild.
+            log_channel_id: The de facto log channel for the server.
         """
         await ctx.response.defer(ephemeral=True)
 
@@ -511,7 +738,8 @@ class ServerManager(commands.Cog):
                 server_type=server_type,
                 cloudflare_zone_id=self.bot.stat_confg['cloudflare_zone_id'],
                 status=models.Status.OFFLINE,
-                credits=0.0
+                credits=0.0,
+                log_channel_id=log_channel_id,
             )
             session.add(new_server)
 
@@ -537,6 +765,7 @@ class ServerManager(commands.Cog):
         clear_role="Set to True to remove the existing role requirement.",
         a2s_port="New A2S port.",
         snapshot_reserve="New snapshot reserve (in credits).",
+        log_channel_id="New log channel ID.",
     )
     @app_commands.autocomplete(server_id=server_autocomplete)
     @checks.is_owner_check()
@@ -545,14 +774,15 @@ class ServerManager(commands.Cog):
             self,
             ctx: discord.Interaction,
             server_id: str,
-            name: str = None,
-            snapshot_id: int = None,
-            target_guild_id: str = None,
-            server_type: str = None,
+            name: str | None = None,
+            snapshot_id: int | None = None,
+            target_guild_id: str | None = None,
+            server_type: str | None = None,
             role_id: int | None = None,
             clear_role: bool = False,
             a2s_port: int | None = None,
             snapshot_reserve: float | None = None,
+            log_channel_id: int | None = None,
     ) -> None:
         """Edits an existing server in the database.
 
@@ -567,6 +797,7 @@ class ServerManager(commands.Cog):
             clear_role: Set to True to remove the existing role requirement.
             a2s_port: New A2S port.
             snapshot_reserve: Custom snapshot reserve (in credits).
+            log_channel_id: New log channel discord ID.
         """
         await ctx.response.defer(ephemeral=True)
 
@@ -611,6 +842,8 @@ class ServerManager(commands.Cog):
                 server.a2s_port = a2s_port
             if snapshot_reserve is not None:
                 server.snapshot_reserve = snapshot_reserve
+            if log_channel_id is not None:
+                server.log_channel_id = log_channel_id
 
             if role_id is not None:
                 server.role_id = role_id
@@ -663,7 +896,8 @@ class ServerManager(commands.Cog):
                                         ephemeral=True)
                 return
 
-        self.bot.loop.create_task(self.spindown(server.id, forced=True))
+        reason = "An administrator has initiated an emergency force-stop. The server is dropping connection immediately."
+        self.bot.loop.create_task(self.spindown(server.id, forced=True, public_reason=reason))
 
         embed = discord.Embed(
             title="Force Stop Initiated",
