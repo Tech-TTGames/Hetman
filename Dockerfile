@@ -20,6 +20,8 @@ COPY --from=build-stage /code/requirements.txt .
 RUN pip install --no-cache-dir --no-deps -r requirements.txt
 
 COPY --chown=appuser hetman /app/hetman/
+COPY --chown=appuser alembic.ini /app/alembic.ini
+COPY --chown=appuser alembic/ /app/alembic/
 
 USER appuser
 
