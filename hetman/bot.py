@@ -16,14 +16,16 @@ Typical usage example:
 
 import logging
 
+from cloudflare import AsyncCloudflare
+from cloudflare import DefaultAioHttpClient
 import discord
 from discord.ext import commands
 from hcloud import Client
-from cloudflare import AsyncCloudflare, DefaultAioHttpClient
 from sqlalchemy.ext import asyncio as sa_asyncio
 
 from hetman import cogs
-from hetman.data import const, config
+from hetman.data import config
+from hetman.data import const
 
 
 class Hetman(commands.AutoShardedBot):
@@ -45,12 +47,14 @@ class Hetman(commands.AutoShardedBot):
     cfcli: AsyncCloudflare
     sessions: sa_asyncio.async_sessionmaker
 
-    def __init__(self,
-                 *args,
-                 db_engine: sa_asyncio.AsyncEngine,
-                 confg: config.Config,
-                 secrets: config.Secret,
-                 **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        db_engine: sa_asyncio.AsyncEngine,
+        confg: config.Config,
+        secrets: config.Secret,
+        **kwargs,
+    ) -> None:
         """Initializes the bot instance.
 
         This function is used to initialize the bot instance.

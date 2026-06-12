@@ -17,7 +17,8 @@ Typical usage example:
 import asyncio
 
 import hetman
-from hetman.data import config, const
+from hetman.data import config
+from hetman.data import const
 
 
 def main():

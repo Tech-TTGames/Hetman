@@ -18,18 +18,23 @@ Typical usage example:
 # SPDX-License-Identifier: EPL-2.0
 # Copyright (c) 2023-present Tech. TTGames
 
+import asyncio
 import logging
 import signal
 import sys
-import colorama
 
+import colorama
 import discord
-import sqlalchemy
 from discord.ext import commands
+import sqlalchemy
 from sqlalchemy.ext import asyncio as sa_asyncio
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from hetman import bot
-from hetman.data import config, const, models
+from hetman.data import config
+from hetman.data import const
+from hetman.data import models
 
 
 # pylint: disable=unused-argument
@@ -53,9 +58,7 @@ async def start_bot(conf: config.Config) -> None:
     try:
         # Set up logging
         dt_fmr = "%Y-%m-%d %H:%M:%S"
-        const.HANDLER.setFormatter(
-            logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s",
-                              dt_fmr))
+        const.HANDLER.setFormatter(logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s", dt_fmr))
 
         # Set up bot logging
         logging.root.setLevel(logging.INFO)
@@ -64,7 +67,6 @@ async def start_bot(conf: config.Config) -> None:
         # Set up discord.py logging
         dscrd_logger = logging.getLogger("discord")
         dscrd_logger.setLevel(logging.INFO)
-        dscrd_logger.addHandler(const.HANDLER)
 
         # Set up sqlalchemy logging
         sql_logger = logging.getLogger("sqlalchemy.engine")
@@ -74,7 +76,6 @@ async def start_bot(conf: config.Config) -> None:
         sql_pool_logger = logging.getLogger("sqlalchemy.pool")
         sql_pool_logger.setLevel(logging.WARNING)
         sql_pool_logger.addHandler(const.HANDLER)
-
 
         logging.info("Logging set up.")
     # pylint: disable=broad-except
@@ -97,13 +98,28 @@ async def start_bot(conf: config.Config) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
-        logging.info("Pragmas set. Ensuring tables...")
 
-        async with engine.begin() as conn:
-            await conn.run_sync(models.Base.metadata.create_all)
-            await conn.commit()
-        logging.info("Tables ensured. Starting bot...")
-    # pylint: disable=broad-exception-caught # skipcq: PYL-W0718
+        logging.info("Pragmas set. Ensuring database schema up to date...")
+
+        def run_alembic_upgrade():
+            """Runs Alembic in a separate thread, handling legacy databases gracefully."""
+            sync_engine = sqlalchemy.create_engine("sqlite:///hetman.db")
+            alembic_cfg = AlembicConfig(str(const.PROG_DIR / "alembic.ini"))
+
+            with sync_engine.connect() as conn:
+                inspector = sqlalchemy.inspect(conn)
+                tables = inspector.get_table_names()
+
+                if "servers" in tables and "alembic_version" not in tables:
+                    logging.info("Legacy database detected! Stamping with baseline...")
+                    command.stamp(alembic_cfg, "baseline_init")
+
+            # Apply any pending migrations
+            command.upgrade(alembic_cfg, "head")
+
+        # Run safely outside the main asyncio loop
+        await asyncio.to_thread(run_alembic_upgrade)
+        logging.info("Schema ready. Starting bot...")
     except Exception as exc:
         logging.exception("Database setup failed. Aborting startup.")
         print("Database: FAILED")
@@ -122,9 +138,7 @@ async def start_bot(conf: config.Config) -> None:
             intents=const.INTENTS,
             command_prefix=commands.when_mentioned,
             status=discord.Status.online,
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="the servers."),
+            activity=discord.Activity(type=discord.ActivityType.watching, name="the servers."),
         )
     # pylint: disable=broad-except
     except Exception as e:

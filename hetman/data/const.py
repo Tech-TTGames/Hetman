@@ -13,11 +13,10 @@ Typical usage example:
 # SPDX-License-Identifier: EPL-2.0
 # Copyright (c) 2023-present Tech. TTGames
 
-import logging
 import logging.handlers
 import pathlib
-import colorama
 
+import colorama
 import discord
 
 VERSION = "v0.0.2"

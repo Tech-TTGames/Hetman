@@ -42,8 +42,7 @@ class Confirm(discord.ui.View):
         self.value = None
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
-    async def confirm(self, interaction: discord.Interaction,
-                      button: discord.ui.Button):
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         """The confirmation button was pressed.
 
         We set the return value to True, disable the button, and stop the view.
@@ -58,8 +57,7 @@ class Confirm(discord.ui.View):
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
-    async def cancel(self, interaction: discord.Interaction,
-                     button: discord.ui.Button):
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         """The cancel button.
 
         We set the return value to False, disable the button, and stop the view.
@@ -75,6 +73,7 @@ class Confirm(discord.ui.View):
 
 
 class LocationSelectView(discord.ui.View):
+
     def __init__(self, valid_locations: list, server_type, author_id: int):
         super().__init__(timeout=60.0)
         self.value = None
@@ -91,20 +90,15 @@ class LocationSelectView(discord.ui.View):
                     break
 
             options.append(
-                discord.SelectOption(
-                    label=f"{eloc.description} ({eloc.name})",
-                    description=f"Cost: €{price:.3f} / hour",
-                    value=eloc.name,
-                    emoji="🌍"
-                )
-            )
+                discord.SelectOption(label=f"{eloc.description} ({eloc.name})",
+                                     description=f"Cost: €{price:.3f} / hour",
+                                     value=eloc.name,
+                                     emoji="🌍"))
 
-        self.select = discord.ui.Select(
-            placeholder="Select a Datacenter Location...",
-            min_values=1,
-            max_values=1,
-            options=options[:25]
-        )
+        self.select = discord.ui.Select(placeholder="Select a Datacenter Location...",
+                                        min_values=1,
+                                        max_values=1,
+                                        options=options[:25])
         self.select.callback = self.select_callback
         self.add_item(self.select)
 

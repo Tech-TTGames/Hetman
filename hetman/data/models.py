@@ -17,11 +17,12 @@ Typical usage example:
 # Copyright (c) 2023-present Tech. TTGames
 
 import datetime
-import uuid
 import enum
+import uuid
 
 import sqlalchemy
 from sqlalchemy import orm
+
 
 class Status(int, enum.Enum):
     """Enum for the status of a server."""
@@ -63,9 +64,9 @@ class Server(Base):
 
     # Billing Data
     start_time: orm.Mapped[datetime.datetime | None] = orm.mapped_column(sqlalchemy.DateTime, nullable=True)
-    credits: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.0)
-    snapshot_reserve: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.5)
-    cost_per_hour: orm.Mapped[float] = orm.mapped_column(sqlalchemy.Float, default=0.05)
+    credits: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=0)
+    snapshot_reserve: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=50000)
+    cost_per_hour: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=5000)
     stop_requested: orm.Mapped[bool] = orm.mapped_column(sqlalchemy.Boolean, default=False)
 
     # Connection Data

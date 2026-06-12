@@ -15,6 +15,7 @@ Typical usage example:
 # Copyright (c) 2023-present Tech. TTGames
 
 from typing import overload
+
 import discord
 import tomli
 
@@ -44,18 +45,14 @@ class Config(dict):
             self.update(tomli.load(f))
 
     @overload
-    async def dev_gld(self,
-                      instance: discord.AutoShardedClient) -> discord.Guild:
+    async def dev_gld(self, instance: discord.AutoShardedClient) -> discord.Guild:
         ...
 
     @overload
     async def dev_gld(self, instance: None) -> int:
         ...
 
-    async def dev_gld(
-        self,
-        instance: discord.AutoShardedClient | None = None
-    ) -> int | discord.Guild:
+    async def dev_gld(self, instance: discord.AutoShardedClient | None = None) -> int | discord.Guild:
         """Returns the dev guild ID.
 
         This method returns the dev guild ID.

@@ -25,18 +25,19 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from hetman import bot, cogs
-from hetman.data import config, const
-from hetman.ext import checks, views
+from hetman import bot
+from hetman import cogs
+from hetman.data import config
+from hetman.data import const
+from hetman.ext import checks
+from hetman.ext import views
 
 _CNFG = config.Config()
 """Submodule private global constant for the config."""
 
 
 @app_commands.guilds(_CNFG["dev_guild_id"])
-class Overrides(commands.GroupCog,
-                name="override",
-                description="Owner override commands."):
+class Overrides(commands.GroupCog, name="override", description="Owner override commands."):
     """Owner override commands.
 
     This class contains commands that are only available to the bot owner.
@@ -62,9 +63,7 @@ class Overrides(commands.GroupCog,
     @app_commands.command(name="reload", description="Reloads the bot's cogs.")
     @checks.is_owner_check()
     @app_commands.describe(sync="Syncs the tree after reloading cogs.")
-    async def reload(self,
-                     ctx: discord.Interaction,
-                     sync: bool = False) -> None:
+    async def reload(self, ctx: discord.Interaction, sync: bool = False) -> None:
         """Reloads the bot's cogs.
 
         This command reloads all cogs in the EXTENSIONS list.
@@ -104,9 +103,7 @@ class Overrides(commands.GroupCog,
         logging.info("Closing...")
         await self._bt.close()
 
-    @app_commands.command(
-        name="pull",
-        description="Pulls the latest changes from the git repo. DANGEROUS!")
+    @app_commands.command(name="pull", description="Pulls the latest changes from the git repo. DANGEROUS!")
     @checks.is_owner_check()
     async def pull(self, ctx: discord.Interaction) -> None:
         """Pulls the latest changes from the git repo.
@@ -121,10 +118,9 @@ class Overrides(commands.GroupCog,
         confr = views.Confirm()
         emd = discord.Embed(
             title="Pull from git",
-            description=(
-                "Are you sure you want to pull from git?\n"
-                "This is a dangerous command, as it can break the bot.\n"
-                "If you are not sure what you are doing, abort now."),
+            description=("Are you sure you want to pull from git?\n"
+                         "This is a dangerous command, as it can break the bot.\n"
+                         "If you are not sure what you are doing, abort now."),
             color=discord.Color.red(),
         )
         await ctx.response.send_message(embed=emd, view=confr)
@@ -139,9 +135,7 @@ class Overrides(commands.GroupCog,
             await ctx.followup.edit_message(mgs.id, embed=emd)
             return
         if not confr.value:
-            emd = discord.Embed(title="Pull from git",
-                                description="Cancelled.",
-                                color=discord.Color.orange())
+            emd = discord.Embed(title="Pull from git", description="Cancelled.", color=discord.Color.orange())
             await ctx.followup.edit_message(mgs.id, embed=emd)
             return
         emd = discord.Embed(

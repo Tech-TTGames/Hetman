@@ -18,7 +18,8 @@ Typical usage example:
 import logging
 
 import discord
-from discord import app_commands, utils
+from discord import app_commands
+from discord import utils
 from discord.ext import commands
 
 from hetman import bot
@@ -66,8 +67,7 @@ class ErrorHandling(commands.Cog, name="AppCommandErrorHandler"):
         tree.on_error = self.old_error_handler
         logging.info("Error handling unloaded.")
 
-    async def on_app_command_error(self, ctx: discord.Interaction,
-                                   error: app_commands.AppCommandError) -> None:
+    async def on_app_command_error(self, ctx: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handles errors from app commands globally.
 
         This function is automatically called when an error is raised,
@@ -106,12 +106,11 @@ class ErrorHandling(commands.Cog, name="AppCommandErrorHandler"):
         if isinstance(error, app_commands.CheckFailure):
             if isinstance(error, app_commands.BotMissingPermissions):
                 emd.title = "Hetman Error: 503 - Bot Missing Permissions"
-                emd.description = (
-                    "The bot is missing permissions required"
-                    " to run this command.\n"
-                    "Please ask a server administrator to grant the bot the "
-                    "following permissions:\n"
-                    f"{chr(92).join(error.missing_permissions)}")
+                emd.description = ("The bot is missing permissions required"
+                                   " to run this command.\n"
+                                   "Please ask a server administrator to grant the bot the "
+                                   "following permissions:\n"
+                                   f"{chr(92).join(error.missing_permissions)}")
                 emd.set_footer(text="If you are sure the bot has the "
                                "required permissions, please report this.")
                 await ctx.followup.send(embed=emd, ephemeral=True)
@@ -126,9 +125,8 @@ class ErrorHandling(commands.Cog, name="AppCommandErrorHandler"):
 
             if isinstance(error, app_commands.CommandOnCooldown):
                 emd.title = "Hetman Error: 429 - Command On Cooldown"
-                emd.description = (
-                    "This command is on cooldown.\n"
-                    f"Please try again in {error.retry_after} seconds.")
+                emd.description = ("This command is on cooldown.\n"
+                                   f"Please try again in {error.retry_after} seconds.")
                 emd.set_footer(text="Thank you for using Hetman!")
                 await ctx.followup.send(embed=emd, ephemeral=True)
                 return
@@ -151,8 +149,7 @@ class ErrorHandling(commands.Cog, name="AppCommandErrorHandler"):
         else:
             error_invk = error
 
-        logging.error("An unhandled error occurred while executing a command:",
-                      exc_info=error_invk)
+        logging.error("An unhandled error occurred while executing a command:", exc_info=error_invk)
         emd.set_footer(text=f"Error type: {type(error_invk).__name__}")
         await ctx.followup.send(embed=emd, ephemeral=True)
 

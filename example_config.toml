@@ -4,7 +4,7 @@ domain = "example.com"
 # The domain to subdomain for the servers.
 cloudflare_zone_id = ""
 # The cloudlfare zone ID of the aforementioned domain.
-ipv4_cost = 0.00098
+ipv4_cost = 0.0008
 # Hetzner's Cost per hour for IPv4.
 [shutdown]
 lookahead = 10
