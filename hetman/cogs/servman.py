@@ -37,12 +37,48 @@ from hetman.ext import views
 _CNFG = config.Config()
 
 
+async def _safe_wait_action(
+    action,
+    server_name: str,
+    action_type: str = "action",
+    max_retries: int = 5,
+) -> bool:
+    """Helper to reliably poll Hetzner actions while catching and absorbing transient API exceptions (like 500 Internal Server Error).
+
+    Args:
+        action: The action to run (assumed a wait_until_finished() method).
+        server_name: The server name for logging purposes.
+        action_type: The action type for logging purposes.
+        max_retries: The maximum number of retries before giving up.
+    """
+
+    for attempt in range(max_retries):
+        try:
+            await asyncio.to_thread(action.wait_until_finished)
+            return True
+        except APIException as e:
+            if attempt < max_retries - 1:
+                logging.warning(
+                    f"[{action_type.upper()}] Transient API error polling for '{server_name}' (Attempt {attempt + 1}). Retrying in 10s...",
+                    exc_info=e,
+                )
+                await asyncio.sleep(10)
+            else:
+                logging.error(
+                    f"[{action_type.upper()}] Polling failed permanently for '{server_name}'. Proceeding to prevent pipeline lockup.",
+                    exc_info=e,
+                )
+                return False
+    return False
+
+
 class ServerManager(commands.Cog):
 
     def __init__(self, bot: Hetman):
         self.bot = bot
-        self._activity_flags: dict[int, bool] = {}
+        self._activity_flags: dict[uuid.UUID, bool] = {}
         self._monitor_tasks: dict[uuid.UUID, asyncio.Task] = {}
+        self._decision_made_hour: dict[uuid.UUID, int] = {}
         self.billing_watchdog.start()
 
     def cog_unload(self):
@@ -51,7 +87,7 @@ class ServerManager(commands.Cog):
             task.cancel()
         self._monitor_tasks.clear()
 
-    async def _check_activity(self, server_id: int, ip: str, port: int, server_name: str):
+    async def _check_activity(self, server_id: uuid.UUID, ip: str, port: int, server_name: str):
         """Checks A2S activity.
 
         Args:
@@ -83,51 +119,14 @@ class ServerManager(commands.Cog):
         except Exception as exc:
             logging.exception(f"[MONITOR] On-demand monitor task crashed for server {server_uuid}", exc_info=exc)
 
-    async def _safe_wait_action(
-        self,
-        action,
-        server_name: str,
-        action_type: str = "action",
-        max_retries: int = 5,
-    ) -> bool:
-        """Helper to reliably poll Hetzner actions while catching and absorbing transient API exceptions (like 500 Internal Server Error).
-
-        Args:
-            action: The action to run (assumed a wait_until_finished() method).
-            server_name: The server name for logging purposes.
-            action_type: The action type for logging purposes.
-            max_retries: The maximum number of retries before giving up.
-        """
-
-        for attempt in range(max_retries):
-            try:
-                await asyncio.to_thread(action.wait_until_finished)
-                return True
-            except APIException as e:
-                if attempt < max_retries - 1:
-                    logging.warning(
-                        f"[{action_type.upper()}] Transient API error polling for '{server_name}' (Attempt {attempt + 1}). Retrying in 10s...",
-                        exc_info=e,
-                    )
-                    await asyncio.sleep(10)
-                else:
-                    logging.error(
-                        f"[{action_type.upper()}] Polling failed permanently for '{server_name}'. Proceeding to prevent pipeline lockup.",
-                        exc_info=e,
-                    )
-                    return False
-        return False
-
     @tasks.loop(minutes=1.0)
     async def billing_watchdog(self):
         """Monitors running servers and executes decisions based on time and credits."""
         lookahead = self.bot.stat_confg.get("shutdown", {}).get("lookahead", 10)
         lookbehind = self.bot.stat_confg.get("shutdown", {}).get("lookbehind", 5)
 
-        # Calculate time windows dynamically
         spindown_minute = 60 - lookahead
         polling_start_minute = spindown_minute - lookbehind
-
         now = datetime.datetime.now(datetime.timezone.utc)
 
         async with self.bot.sessions.begin() as session:
@@ -136,6 +135,32 @@ class ServerManager(commands.Cog):
                     models.Server.status.in_([models.Status.ONLINE, models.Status.STARTING,
                                               models.Status.SNAPSHOTTING])))).all()
 
+        # --- STEP 1: CONCURRENT ACTIVITY CHECKS ---
+        a2s_tasks = []
+        for server in servers:
+            if not server.start_time:
+                continue
+
+            if server.start_time.tzinfo is None:
+                server.start_time = server.start_time.replace(tzinfo=datetime.timezone.utc)
+            minute_of_hour = int(((now - server.start_time).total_seconds() / 60) % 60)
+
+            # Phase 1: The Lookbehind Window
+            if polling_start_minute <= minute_of_hour <= spindown_minute and server.status == models.Status.ONLINE:
+                if minute_of_hour == polling_start_minute and server.log_channel_id:
+                    embed = discord.Embed(
+                        title="Activity Check Monitoring ⏳",
+                        description=
+                        f"**{server.name}** has entered its scheduled activity verification window.\nIf the server remains empty for the next **{lookbehind} minutes**, it will automatically spin down to preserve credits.",
+                        color=discord.Color.blue(),
+                    )
+                    await self.send_log_dump(server.log_channel_id, embed)
+                a2s_tasks.append(self._check_activity(server.id, server.ip_address, server.a2s_port, server.name))
+
+        if a2s_tasks:
+            await asyncio.gather(*a2s_tasks)
+
+        # --- STEP 2: DECISIONS & BILLING ---
         for server in servers:
             if not server.start_time:
                 await self.bot.loop.create_task(
@@ -147,40 +172,16 @@ class ServerManager(commands.Cog):
                 logging.warning(f"[STARTUP] Server '{server.name}' has no start time. Forcing spindown.")
                 continue
 
-            # Calculate current minute of the billed hour
             if server.start_time.tzinfo is None:
                 server.start_time = server.start_time.replace(tzinfo=datetime.timezone.utc)
             delta_seconds = (now - server.start_time).total_seconds()
             minute_of_hour = int((delta_seconds / 60) % 60)
+            current_hour = int(delta_seconds / 3600)
 
-            # --- PHASE 1: THE LOOKBEHIND WINDOW (Minutes 45 - 49) ---
-            if polling_start_minute <= minute_of_hour <= spindown_minute and server.status == models.Status.ONLINE:
-                if minute_of_hour == polling_start_minute and server.log_channel_id:
-                    try:
-                        channel = self.bot.get_channel(server.log_channel_id) or await self.bot.fetch_channel(
-                            server.log_channel_id)
-                        if channel:
-                            embed = discord.Embed(
-                                title="Activity Check Monitoring ⏳",
-                                description=
-                                f"**{server.name}** has entered its scheduled activity verification window.\nIf the server remains empty for the next **{lookbehind} minutes**, it will automatically spin down to preserve credits.",
-                                color=discord.Color.blue(),
-                            )
-                            await channel.send(embed=embed)
-                    except Exception as e:
-                        logging.warning(f"[NOTIFY] Failed to broadcast polling start notice", exc_info=e)
-
-                try:
-                    info = await a2s.ainfo((server.ip_address, server.a2s_port), timeout=2.0, encoding="utf-8")
-                    if info.player_count > 0:
-                        self._activity_flags[server.id] = True
-                except Exception as e:
-                    logging.warning(f"[ACTIVITY] Server '{server.name}' timed out or rebooted. Treating as empty.",
-                                    exc_info=e)
-                    pass
-
-            # --- PHASE 2: THE DECISION CROSSROADS (Minute 50) ---
-            if minute_of_hour == spindown_minute and server.status == models.Status.ONLINE:
+            # Phase 2: The Decision Crossroads
+            if minute_of_hour >= spindown_minute and self._decision_made_hour.get(
+                    server.id) != current_hour and server.status == models.Status.ONLINE:
+                self._decision_made_hour[server.id] = current_hour
                 was_active = self._activity_flags.get(server.id, False)
 
                 if server.stop_requested:
@@ -191,20 +192,18 @@ class ServerManager(commands.Cog):
                     reason = f"**{server.name}** has gone to sleep due to inactivity during the lookbehind window."
                     logging.info(f"[ACTIVITY] Server '{server.name}' remained empty. Soft spindown triggered.")
                     self.bot.loop.create_task(self.spindown(server.id, public_reason=reason))
-                else:
-                    self._activity_flags[server.id] = False
-
-            # Credit check - 5 minutes left in the billed hour
-            elif minute_of_hour == 55 and server.status != models.Status.SNAPSHOTTING:
-                if server.credits < (server.snapshot_reserve + server.cost_per_hour):
+                elif server.credits < (server.snapshot_reserve + server.cost_per_hour):
                     reason = f"**{server.name}** has insufficient credits to renew for another hour (Balance: €{server.credits / 100_000:.2f}). Forcing shutdown."
                     logging.warning(
                         f"[FINANCE] Server '{server.name}' has insufficient credits. Forcing instant spindown.")
-                    self.bot.loop.create_task(self.spindown(server.id, forced=True, public_reason=reason))
+                    self.bot.loop.create_task(self.spindown(server.id, public_reason=reason))
+                else:
+                    self._activity_flags[server.id] = False
 
             # --- PHASE 3: THE RESET (Minute 0 of the next hour) ---
             elif minute_of_hour == 0 and delta_seconds > 60:
                 self._activity_flags.pop(server.id, None)
+                self._decision_made_hour.pop(server.id, None)
 
                 async with self.bot.sessions.begin() as session:
                     db_server = await session.get(models.Server, server.id)
@@ -275,7 +274,7 @@ class ServerManager(commands.Cog):
                 logging.info(f"[SHUTDOWN] Requesting graceful ACPI shutdown for '{server.name}'.")
                 shutdown_task = await asyncio.to_thread(hetzner_server.shutdown)
 
-            await self._safe_wait_action(shutdown_task, server.name, "power_down")
+            await _safe_wait_action(shutdown_task, server.name, "power_down")
 
             # --- STEP 3: TRIGGER SNAPSHOT ---
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
@@ -295,7 +294,7 @@ class ServerManager(commands.Cog):
 
             # Long-running block happens completely OUTSIDE an open SQL transaction
             logging.info(f"[SHUTDOWN] Snapshot triggered. Polling cloud tracking action for '{server.name}'...")
-            await self._safe_wait_action(snapshot_task.action, server.name, "snapshot")
+            await _safe_wait_action(snapshot_task.action, server.name, "snapshot")
 
             # --- STEP 4: CLEAN UP OLD SNAPSHOT ---
             try:
@@ -316,7 +315,7 @@ class ServerManager(commands.Cog):
             logging.info(
                 f"[SHUTDOWN] Retaining snapshot complete. Instructing Hetzner to drop server node '{server.name}'...")
             del_task = await asyncio.to_thread(hetzner_server.delete)
-            await self._safe_wait_action(del_task, server.name, "delete")
+            await _safe_wait_action(del_task, server.name, "delete")
 
             # --- STEP 6: BIN DDNS ---
             try:
@@ -694,7 +693,7 @@ class ServerManager(commands.Cog):
             )
 
             new_node = create_task.server
-            await self._safe_wait_action(create_task.action, server.name, "provisioning")
+            await _safe_wait_action(create_task.action, server.name, "provisioning")
             new_ip = new_node.public_net.ipv4.ip
 
             async with self.bot.sessions.begin() as session:
@@ -741,7 +740,7 @@ class ServerManager(commands.Cog):
             if new_node is not None:
                 try:
                     del_task = await asyncio.to_thread(new_node.delete)
-                    await self._safe_wait_action(del_task, server.name, "deleting")
+                    await _safe_wait_action(del_task, server.name, "deleting")
                     logging.info(f"[STARTUP] Cleaned up orphaned Hetzner node {new_node.id} after startup failure.")
                 except Exception as cleanup_error:
                     cleanup_succeeded = False
