@@ -1267,7 +1267,7 @@ class ServerManager(commands.Cog):
             if snapshot_reserve is not None:
                 server.snapshot_reserve = int(round(snapshot_reserve * 100_000))
             if size is not None:
-                server.size = int(round(size * 100_000))
+                server.snapshot_size = int(round(size * 100_000))
             if log_channel_id is not None:
                 server.log_channel_id = int(log_channel_id)
 
