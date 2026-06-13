@@ -31,6 +31,7 @@ from sqlalchemy import select
 from hetman.bot import Hetman
 from hetman.data import config
 from hetman.data import models
+from hetman.data.models import Server
 from hetman.ext import checks
 from hetman.ext import views
 
@@ -79,6 +80,7 @@ class ServerManager(commands.Cog):
         self._activity_flags: dict[uuid.UUID, bool] = {}
         self._monitor_tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._decision_made_hour: dict[uuid.UUID, int] = {}
+        self._storage_paid_hour: dict[uuid.UUID, int] = {}
         self.billing_watchdog.start()
 
     def cog_unload(self):
@@ -130,15 +132,12 @@ class ServerManager(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
 
         async with self.bot.sessions.begin() as session:
-            servers = (await session.scalars(
-                select(models.Server).where(
-                    models.Server.status.in_([models.Status.ONLINE, models.Status.STARTING,
-                                              models.Status.SNAPSHOTTING])))).all()
+            servers = (await session.scalars(select(models.Server))).all()
 
         # --- STEP 1: CONCURRENT ACTIVITY CHECKS ---
         a2s_tasks = []
         for server in servers:
-            if not server.start_time:
+            if not server.start_time or server.status == models.Status.OFFLINE:
                 continue
 
             if server.start_time.tzinfo is None:
@@ -162,6 +161,73 @@ class ServerManager(commands.Cog):
 
         # --- STEP 2: DECISIONS & BILLING ---
         for server in servers:
+            # --- PHASE 0: STORAGE BILLING (System Clock Minute 0) --
+            if self._storage_paid_hour.get(server.id) != now.hour:
+                self._storage_paid_hour[server.id] = now.hour
+
+                async with self.bot.sessions.begin() as session:
+                    db_server = await session.get(models.Server, server.id)
+                    if db_server:
+                        snap_per_hour = int(round(db_server.snapshot_size * self.bot.stat_confg["snapshot_cost"] / 730))
+                        db_server.credits -= snap_per_hour
+                        server.credits = db_server.credits
+
+                        # Bankruptcy Protocol for Offline Servers
+                        if db_server.credits <= 0:
+                            if db_server.status != models.Status.OFFLINE:
+                                logging.warning(
+                                    f"[BANKRUPTCY] Server '{db_server.name}' hit 0 credits while active! Forcing emergency spindown."
+                                )
+                                reason = "Critical Balance Depletion: The server has completely run out of funds and is executing an emergency force-stop."
+                                self.bot.loop.create_task(self.spindown(server.id, forced=True, public_reason=reason))
+                            else:
+                                logging.warning(
+                                    f"[BANKRUPTCY] Server '{db_server.name}' has run out of reserve credits. Purging snapshot {db_server.current_snapshot_id}."
+                                )
+                                try:
+                                    target_snap = await asyncio.to_thread(self.bot.hcli.images.get_by_id,
+                                                                          db_server.current_snapshot_id)
+                                    if target_snap:
+                                        await asyncio.to_thread(target_snap.delete)
+                                    await session.delete(db_server)
+                                    if db_server.log_channel_id:
+                                        embed = discord.Embed(
+                                            title="Server Deleted ⚠️",
+                                            description=
+                                            f"**{db_server.name}** has entirely depleted its snapshot reserve. The world save has been permanently deleted from the cloud.",
+                                            color=discord.Color.dark_red())
+                                        self.bot.loop.create_task(self.send_log_dump(db_server.log_channel_id, embed))
+                                except Exception as e:
+                                    logging.error(f"[BANKRUPTCY] Failed to delete snapshot for '{db_server.name}'",
+                                                  exc_info=e)
+
+                        elif db_server.credits <= snap_per_hour * 24 and not db_server.notified_24h:
+                            if db_server.log_channel_id:
+                                embed = discord.Embed(
+                                    title="Final Warning: Impending Deletion 🚨",
+                                    description=
+                                    (f"**{db_server.name}** has less than **24 hours** of snapshot reserve credits remaining.\n\n"
+                                     f"To prevent billing overdrafts, the server profile and its world save will be **permanently deleted** from the cloud tomorrow if the balance is not topped up. "
+                                     f"Please contact the server administrator immediately."),
+                                    color=discord.Color.red())
+                                self.bot.loop.create_task(self.send_log_dump(db_server.log_channel_id, embed))
+                                db_server.notified_24h = True
+
+                        elif db_server.credits <= snap_per_hour * 24 * 7 and not db_server.notified_7d:
+                            if db_server.log_channel_id:
+                                embed = discord.Embed(
+                                    title="Offline Storage Warning ⚠️",
+                                    description=
+                                    (f"**{db_server.name}**'s reserve balance is running low.\n\n"
+                                     f"There is currently enough balance to store the world save for **7 more days**. "
+                                     f"If you plan to resume playing, please ensure credits are added to the server soon to prevent automated cleanup."
+                                    ),
+                                    color=discord.Color.orange())
+                                self.bot.loop.create_task(self.send_log_dump(db_server.log_channel_id, embed))
+                                db_server.notified_7d = True
+            if server.status == models.Status.OFFLINE:
+                continue
+
             if not server.start_time:
                 await self.bot.loop.create_task(
                     self.spindown(
@@ -315,6 +381,22 @@ class ServerManager(commands.Cog):
             logging.info(
                 f"[SHUTDOWN] Retaining snapshot complete. Instructing Hetzner to drop server node '{server.name}'...")
             del_task = await asyncio.to_thread(hetzner_server.delete)
+
+            try:
+                final_image: BoundImage = await asyncio.to_thread(self.bot.hcli.images.get_by_id, new_snapshot_id)
+                image_size_gb = round(getattr(final_image, 'image_size', 10.0) * 100_000)
+                logging.info(
+                    f"[SHUTDOWN] Offline storage size for '{server.name}' set to {image_size_gb / 100_000:.2f} GB.")
+            except Exception as e:
+                logging.warning(
+                    f"[SHUTDOWN] Failed to calculate exact snapshot size for '{server.name}'. Defaulting to safe estimate.",
+                    exc_info=e)
+                image_size_gb = 1000000
+            async with self.bot.sessions.begin() as session:
+                session.add(server)
+                await session.refresh(server)
+                server.snapshot_size = image_size_gb
+
             await _safe_wait_action(del_task, server.name, "delete")
 
             # --- STEP 6: BIN DDNS ---
@@ -805,9 +887,12 @@ class ServerManager(commands.Cog):
         if server.stop_requested:
             embed.description = "⚠️ **Pending Shutdown:** A stop request has been filed. The server will safely power down at the end of the current billing cycle."
 
+        snap_per_hour = int(round(server.snapshot_size * self.bot.stat_confg["snapshot_cost"]))
+
         embed.add_field(name="Status", value=f"**{server.status.name}**", inline=True)
         embed.add_field(name="Credits Remaining", value=f"€{server.credits / 100_000:.2f}", inline=True)
         embed.add_field(name="Snapshot Reserve", value=f"€{server.snapshot_reserve / 100_000:.2f}", inline=True)
+        embed.add_field(name="Snapshot Costs / Month", value=f"€{snap_per_hour / 100_000:.3f}", inline=True)
 
         if server.status == models.Status.ONLINE:
             embed.add_field(name="Active Cost / Hour", value=f"€{server.cost_per_hour / 100_000:.3f}", inline=True)
@@ -846,7 +931,9 @@ class ServerManager(commands.Cog):
                 embed.add_field(name="Live Data", value="⚠️ Game server is not responding to queries.", inline=False)
         else:
             # Display stale cost when offline
-            embed.add_field(name="Est. Cost / Hour", value=f"€{server.cost_per_hour / 100_000:.3f}", inline=True)
+            embed.add_field(name="Est. Hardware Cost / Hour",
+                            value=f"€{server.cost_per_hour / 100_000:.3f}",
+                            inline=True)
 
         await ctx.followup.send(embed=embed)
 
@@ -1072,7 +1159,7 @@ class ServerManager(commands.Cog):
                 server_type=server_type.lower().strip(),
                 cloudflare_zone_id=self.bot.stat_confg['cloudflare_zone_id'],
                 status=models.Status.OFFLINE,
-                credits=0,
+                credits=50000,
                 log_channel_id=log_channel_id,
             )
             session.add(new_server)
@@ -1266,6 +1353,8 @@ class ServerManager(commands.Cog):
                 server = await session.get(models.Server, server_uuid)
                 if server:
                     server.credits += int(round(amount * 100_000))
+                    server.notified_7d = False
+                    server.notified_24h = False
                     await ctx.followup.send(
                         f"Added €{amount:.2f} to **{server.name}**. New balance: €{server.credits / 100_000:.2f}")
                 else:

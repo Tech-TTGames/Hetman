@@ -6,6 +6,8 @@ cloudflare_zone_id = ""
 # The cloudlfare zone ID of the aforementioned domain.
 ipv4_cost = 0.0008
 # Hetzner's Cost per hour for IPv4.
+snapshot_cost = 0.0143
+# Hetzner's Cost per Month per GB for snapshots.
 [shutdown]
 lookahead = 10
 # Minutes to shut down before the next billing hour if empty/no credits.

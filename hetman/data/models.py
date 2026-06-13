@@ -68,6 +68,7 @@ class Server(Base):
     snapshot_reserve: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=50000)
     cost_per_hour: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=5000)
     stop_requested: orm.Mapped[bool] = orm.mapped_column(sqlalchemy.Boolean, default=False)
+    snapshot_size: orm.Mapped[int] = orm.mapped_column(sqlalchemy.BigInteger, default=1000000)
 
     # Connection Data
     ip_address: orm.Mapped[str | None] = orm.mapped_column(sqlalchemy.String, nullable=True)
@@ -76,3 +77,7 @@ class Server(Base):
     # Cloudflare DDNS Data
     cloudflare_zone_id: orm.Mapped[str | None] = orm.mapped_column(sqlalchemy.String, nullable=True)
     cloudflare_record_id: orm.Mapped[str | None] = orm.mapped_column(sqlalchemy.String, nullable=True)
+
+    # Functional
+    notified_7d: orm.Mapped[bool] = orm.mapped_column(sqlalchemy.Boolean, default=False)
+    notified_24h: orm.Mapped[bool] = orm.mapped_column(sqlalchemy.Boolean, default=False)
