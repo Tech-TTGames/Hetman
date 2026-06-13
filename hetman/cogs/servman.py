@@ -1187,6 +1187,7 @@ class ServerManager(commands.Cog):
         a2s_port="New A2S port.",
         snapshot_reserve="New snapshot reserve (in credits).",
         log_channel_id="New log channel ID.",
+        size="Server snapshot size (in GB).",
     )
     @app_commands.autocomplete(server_id=server_autocomplete)
     @checks.is_owner_check()
@@ -1204,6 +1205,7 @@ class ServerManager(commands.Cog):
         a2s_port: str | None = None,
         snapshot_reserve: float | None = None,
         log_channel_id: str | None = None,
+        size: float | None = None,
     ) -> None:
         """Edits an existing server in the database.
 
@@ -1219,6 +1221,7 @@ class ServerManager(commands.Cog):
             a2s_port: New A2S port.
             snapshot_reserve: Custom snapshot reserve (in credits).
             log_channel_id: New log channel discord ID.
+            size: Server snapshot size (in GB).
         """
         await ctx.response.defer(ephemeral=True)
 
@@ -1263,6 +1266,8 @@ class ServerManager(commands.Cog):
                 server.a2s_port = int(a2s_port)
             if snapshot_reserve is not None:
                 server.snapshot_reserve = int(round(snapshot_reserve * 100_000))
+            if size is not None:
+                server.size = int(round(size * 100_000))
             if log_channel_id is not None:
                 server.log_channel_id = int(log_channel_id)
 
