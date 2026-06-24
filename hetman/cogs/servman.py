@@ -445,9 +445,9 @@ class ServerManager(commands.Cog):
                 if server:
                     server.status = models.Status.OFFLINE
                     server.stop_requested = False
-        self._activity_flags.pop(server.id, None)
-        self._decision_made_hour.pop(server.id, None)
-        self._last_billed_hour.pop(server.id, None)
+        self._activity_flags.pop(server_db_id, None)
+        self._decision_made_hour.pop(server_db_id, None)
+        self._last_billed_hour.pop(server_db_id, None)
 
     async def send_log_dump(self, log_channel_id: int | None, embed: discord.Embed) -> None:
         """Internal helper to dispatch embeds to the designated text log channel safely.
