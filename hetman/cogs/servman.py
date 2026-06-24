@@ -81,6 +81,7 @@ class ServerManager(commands.Cog):
         self._monitor_tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._decision_made_hour: dict[uuid.UUID, int] = {}
         self._storage_paid_hour: dict[uuid.UUID, int] = {}
+        self._last_billed_hour: dict[uuid.UUID, int] = {}
         self.billing_watchdog.start()
 
     def cog_unload(self):
@@ -267,7 +268,18 @@ class ServerManager(commands.Cog):
                     self._activity_flags[server.id] = False
 
             # --- PHASE 3: THE RESET (Minute 0 of the next hour) ---
-            elif minute_of_hour == 0 and delta_seconds > 60:
+            last_billed = self._last_billed_hour.get(server.id)
+
+            # If the bot just restarted, baseline the current hour so we don't double-charge
+            if last_billed is None:
+                self._last_billed_hour[server.id] = current_hour
+                self._activity_flags.pop(server.id, None)
+                self._decision_made_hour.pop(server.id, None)
+
+            # If we crossed into a new hour of uptime, execute the charge
+            elif current_hour != last_billed:
+                self._last_billed_hour[server.id] = current_hour
+
                 self._activity_flags.pop(server.id, None)
                 self._decision_made_hour.pop(server.id, None)
 
@@ -433,6 +445,9 @@ class ServerManager(commands.Cog):
                 if server:
                     server.status = models.Status.OFFLINE
                     server.stop_requested = False
+        self._activity_flags.pop(server.id, None)
+        self._decision_made_hour.pop(server.id, None)
+        self._last_billed_hour.pop(server.id, None)
 
     async def send_log_dump(self, log_channel_id: int | None, embed: discord.Embed) -> None:
         """Internal helper to dispatch embeds to the designated text log channel safely.
@@ -789,7 +804,7 @@ class ServerManager(commands.Cog):
                     server.credits -= total_cost  # Secure upfront hour deduction
                     server.start_time = datetime.datetime.now(datetime.timezone.utc)
                     server.ip_address = new_ip
-
+            self._last_billed_hour[server.id] = 0
             try:
                 record = await self.bot.cfcli.dns.records.create(
                     zone_id=server.cloudflare_zone_id,
