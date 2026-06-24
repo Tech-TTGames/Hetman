@@ -769,9 +769,11 @@ class ServerManager(commands.Cog):
                 location=location,
                 public_net=network_cnfg,
                 user_data=("#cloud-config\n"
-                           "users:\n"
-                           "  - name: root\n"
-                           "    lock_passwd: true\n"),
+                           "ssh_pwauth: false\n"
+                           "chpasswd:\n"
+                           "  list: |\n"
+                           "    root:DISABLE_PASSWORD_BUT_SET_STRING\n"
+                           "  expire: false"),
             )
 
             new_node = create_task.server
