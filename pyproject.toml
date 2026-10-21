@@ -1,31 +1,47 @@
-[tool.poetry]
+[project]
 name = "Hetman"
 version = "0.0.2"
 description = "On-demand Hetzner server management via discord bot."
-authors = ["Tech. TTGames <50541739+Tech-TTGames@users.noreply.github.com>"]
-license = "EPL-2.0"
+authors = [{ name = "Tech. TTGames", email = "50541739+Tech-TTGames@users.noreply.github.com" }]
+requires-python = ">=3.14,<4"
 readme = "README.md"
-repository = "https://github.com/Tech-TTGames/Hetman"
-packages = [
-    {include = "hetman"}
+license = "EPL-2.0"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "discord.py>=2.2.3,<3",
+    "tomli>=2.0.1,<3",
+    "hcloud>=2.20.0,<3",
+    "cloudflare[aiohttp]>=5.2.0,<6",
+    "sqlalchemy[asyncio]>=2.0.50,<3",
+    "aiosqlite>=0.22.1,<0.23",
+    "python-a2s>=1.4.1,<2",
+    "colorama>=0.4.6,<0.5",
+    "alembic>=1.18.4,<2",
 ]
 
-[tool.poetry.dependencies]
-python = "^3.14"
-"discord.py" = "^2.2.3"
-tomli = "^2.0.1"
-hcloud = "^2.20.0"
-cloudflare = {extras = ["aiohttp"], version = "^5.2.0"}
-sqlalchemy = {extras = ["asyncio"], version = "^2.0.50"}
-aiosqlite = "^0.22.1"
-python-a2s = "^1.4.1"
-colorama = "^0.4.6"
-alembic = "^1.18.4"
+[project.urls]
+Repository = "https://github.com/Tech-TTGames/Hetman"
 
-[tool.poetry.group.dev.dependencies]
-isort = "^8.0.1"
-yapf = "^0.43.0"
-pylint = "^4.0.4"
+[dependency-groups]
+dev = [
+    "isort>=8.0.1,<9",
+    "yapf>=0.43.0,<0.44",
+    "pylint>=4.0.4,<5",
+]
+
+[tool.uv]
+default-groups = "all"
+
+[tool.uv.build-backend]
+module-name = ["hetman"]
+module-root = ""
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
 
 [tool.yapf]
 based_on_style = "google"
@@ -34,7 +50,3 @@ column_limit = 120
 [tool.isort]
 profile = "google"
 lines_between_types = 1
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"

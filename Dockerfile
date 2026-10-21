@@ -1,28 +1,21 @@
-FROM python:3.14-alpine AS build-stage
-
-WORKDIR /code
-
-RUN pip install --no-cache-dir poetry poetry-plugin-export
-
-COPY poetry.lock pyproject.toml ./
-
-RUN poetry export -f requirements.txt --output requirements.txt --without-hashes --without dev
-
-FROM python:3.14-alpine
+FROM ghcr.io/astral-sh/uv:alpine
 LABEL authors="techttgames"
 
 WORKDIR /app
 
 RUN adduser -S -u 1001 appuser && chown appuser .
 
-COPY --from=build-stage /code/requirements.txt .
+COPY --chown=appuser pyproject.toml uv.lock ./
 
-RUN pip install --no-cache-dir --no-deps -r requirements.txt
+USER appuser
+
+RUN uv sync --frozen --no-dev --no-install-project --python 3.14
 
 COPY --chown=appuser hetman /app/hetman/
 COPY --chown=appuser alembic.ini /app/alembic.ini
 COPY --chown=appuser alembic/ /app/alembic/
+COPY --chown=appuser README.md /app/
 
-USER appuser
+RUN uv sync --frozen --no-dev
 
-CMD ["python", "-m", "hetman"]
+CMD ["uv", "run", "python", "-m", "kumo_bot"]
